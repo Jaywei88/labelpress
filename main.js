@@ -481,11 +481,18 @@ ipcMain.handle('print:saveSettings', (_e, payload) => {
   return { ok: true };
 });
 
+// 打印机列表缓存：枚举较慢，5 分钟内复用（换打印机最多延迟 5 分钟生效，可重启应用刷新）
+let printersCache = { list: null, at: 0 };
+
 ipcMain.handle('print:getPrinters', async (e) => {
   try {
+    if (printersCache.list && Date.now() - printersCache.at < 5 * 60 * 1000) {
+      return { ok: true, printers: printersCache.list, cached: true };
+    }
     const win = BrowserWindow.fromWebContents(e.sender) || mainWindow;
     if (!win) return { ok: true, printers: [] };
     const printers = await win.webContents.getPrintersAsync();
+    printersCache = { list: printers, at: Date.now() };
     return { ok: true, printers };
   } catch (err) {
     return { ok: true, printers: [], error: err.message };

@@ -60,6 +60,7 @@
       color: el.color || '#000000',
       rot: normalizeRot(el.rot),
       vertical: !!el.vertical,
+      font: String(el.font || '').replace(/['"]/g, '').slice(0, 40),
     };
   }
 
@@ -91,6 +92,22 @@
   function normalizeRot(v) {
     const n = Number(v) || 0;
     return [90, 180, 270].includes(n) ? n : 0;
+  }
+
+  // 日期占位符：{今天} {明天} {昨天} → YYYY-MM-DD（渲染时解析，预览与打印一致）
+  function resolvePlaceholders(text) {
+    const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const now = new Date();
+    return String(text == null ? '' : text)
+      .replace(/\{今天\}/g, fmt(now))
+      .replace(/\{明天\}/g, fmt(new Date(now.getTime() + 86400000)))
+      .replace(/\{昨天\}/g, fmt(new Date(now.getTime() - 86400000)));
+  }
+
+  // 字体：存系统字体名，空 = 跟随默认（微软雅黑栈）
+  function fontCss(el) {
+    if (!el || !el.font) return '';
+    return `font-family:'${String(el.font).replace(/['"]/g, '')}';`;
   }
 
   const DEFAULT_ELEMENTS = {
@@ -220,13 +237,13 @@
     const e = elements;
 
     if (e.name.visible && p.name) {
-      parts.push(`<div class="el el-name" style="left:${unit(e.name.x)};top:${unit(e.name.y)};width:${unit(e.name.w)};font-size:${unit(e.name.fontSize)};text-align:${e.name.align};font-weight:${e.name.bold ? 'bold' : 'normal'};color:${e.name.color};${rotTransform(e.name)}${verticalStyle(e.name)}">${esc(p.name)}</div>`);
+      parts.push(`<div class="el el-name" style="left:${unit(e.name.x)};top:${unit(e.name.y)};width:${unit(e.name.w)};font-size:${unit(e.name.fontSize)};text-align:${e.name.align};font-weight:${e.name.bold ? 'bold' : 'normal'};color:${e.name.color};${rotTransform(e.name)}${verticalStyle(e.name)}${fontCss(e.name)}">${esc(p.name)}</div>`);
     }
     if (e.price.visible && p.price !== '' && p.price != null) {
-      parts.push(`<div class="el el-price" style="left:${unit(e.price.x)};top:${unit(e.price.y)};width:${unit(e.price.w)};font-size:${unit(e.price.fontSize)};text-align:${e.price.align};font-weight:${e.price.bold ? 'bold' : 'normal'};color:${e.price.color};${rotTransform(e.price)}${verticalStyle(e.price)}">¥${Number(p.price).toFixed(2)}</div>`);
+      parts.push(`<div class="el el-price" style="left:${unit(e.price.x)};top:${unit(e.price.y)};width:${unit(e.price.w)};font-size:${unit(e.price.fontSize)};text-align:${e.price.align};font-weight:${e.price.bold ? 'bold' : 'normal'};color:${e.price.color};${rotTransform(e.price)}${verticalStyle(e.price)}${fontCss(e.price)}">¥${Number(p.price).toFixed(2)}</div>`);
     }
     if (e.sku.visible && p.sku) {
-      parts.push(`<div class="el el-sku" style="left:${unit(e.sku.x)};top:${unit(e.sku.y)};width:${unit(e.sku.w)};font-size:${unit(e.sku.fontSize)};text-align:${e.sku.align};font-weight:${e.sku.bold ? 'bold' : 'normal'};color:${e.sku.color};${rotTransform(e.sku)}${verticalStyle(e.sku)}">${esc(p.sku)}</div>`);
+      parts.push(`<div class="el el-sku" style="left:${unit(e.sku.x)};top:${unit(e.sku.y)};width:${unit(e.sku.w)};font-size:${unit(e.sku.fontSize)};text-align:${e.sku.align};font-weight:${e.sku.bold ? 'bold' : 'normal'};color:${e.sku.color};${rotTransform(e.sku)}${verticalStyle(e.sku)}${fontCss(e.sku)}">${esc(p.sku)}</div>`);
     }
     if (e.barcode.visible && p.barcodeSvg) {
       parts.push(`<img class="el el-barcode" src="${p.barcodeSvg}" alt="barcode" style="left:${unit(e.barcode.x)};top:${unit(e.barcode.y)};width:${unit(e.barcode.w)};height:${unit(e.barcode.h)};${rotTransform(e.barcode)}">`);
@@ -238,7 +255,7 @@
     // 自定义元素（自由文本，可任意添加/复制/移动/旋转）
     for (const c of custom || []) {
       if (!c.visible) continue;
-      parts.push(`<div class="el el-custom" style="left:${unit(c.x)};top:${unit(c.y)};width:${unit(c.w)};font-size:${unit(c.fontSize)};text-align:${c.align};font-weight:${c.bold ? 'bold' : 'normal'};color:${c.color};${rotTransform(c)}${verticalStyle(c)}">${esc(c.text)}</div>`);
+      parts.push(`<div class="el el-custom" style="left:${unit(c.x)};top:${unit(c.y)};width:${unit(c.w)};font-size:${unit(c.fontSize)};text-align:${c.align};font-weight:${c.bold ? 'bold' : 'normal'};color:${c.color};${rotTransform(c)}${verticalStyle(c)}${fontCss(c)}">${esc(resolvePlaceholders(c.text))}</div>`);
     }
     return parts.join('\n');
   }
@@ -321,6 +338,8 @@
     normalizePrintOptions,
     normalizeCustomElement,
     normalizeRot,
+    resolvePlaceholders,
+    fontCss,
     newCustomId,
     renderLabelHTML,
     buildPrintHtml,

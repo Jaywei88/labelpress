@@ -44,12 +44,14 @@
             <th>SKU</th>
             <th class="col-cat">分类</th>
             <th class="col-price">价格</th>
+            <th class="col-quick"></th>
           </tr>
         </thead>
         <tbody id="productBody"></tbody>
       </table>
       <div class="list-footer">
-        <span id="printHint">勾选商品后可批量打印</span>
+        <span id="printHint">勾选后可打印；行尾 🖨 可快速打印单个商品</span>
+        <button id="btnQuickPrint" title="按当前预设和上次的打印机直接打印勾选商品，不打开设计器">⚡ 快速打印</button>
         <button id="btnPrintSelected" class="primary">🖨 打印选中</button>
         <button id="btnPrintAll">🖨 打印全部</button>
       </div>
@@ -204,7 +206,7 @@
             <!-- 每个元素一组参数，由 JS 生成 -->
           </div>
           <button id="btnAddCustom" class="add-custom-btn" title="添加一个自定义文本元素，可随意移动/复制">＋ 添加自定义文本</button>
-          <p class="designer-tip">预览中拖动元素调整位置（靠近其它元素或标签边/中心线会吸附对齐）；Ctrl+点选或空白处框选多选，多选后可用上方工具栏对齐/等距分布；方向键微调（Shift 加速）；Ctrl+Z 撤销、Ctrl+Y 重做；Ctrl+C/V 复制粘贴、Delete 删除（自定义元素）；Ctrl+A 全选、Esc 取消多选。</p>
+          <p class="designer-tip">预览中拖动元素调整位置（靠近其它元素或标签边/中心线会吸附对齐）；Ctrl+点选或空白处框选多选，多选后可用上方工具栏对齐/等距分布；方向键微调（Shift 加速）；Ctrl+Z 撤销、Ctrl+Y 重做；Ctrl+C/V 复制粘贴、Delete 删除（自定义元素）；Ctrl+A 全选、Esc 取消多选。自定义文本支持日期占位符 {今天} {明天} {昨天}，打印时自动替换。</p>
         </div>
         <!-- 右侧：所见即所得预览 -->
         <div class="designer-right">

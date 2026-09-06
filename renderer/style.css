@@ -436,6 +436,12 @@ textarea { resize: vertical; }
 /* 列表筛选/排序下拉 */
 .filter-select { width: auto; min-width: 88px; font-size: 12px; padding: 5px 6px; }
 
+/* 行内快速打印列 + 行内改价输入框 */
+.col-quick { width: 40px; text-align: center; }
+.col-quick .quick-print { opacity: 0; transition: opacity .12s; padding: 2px 7px; font-size: 12px; }
+.product-table tr:hover .col-quick .quick-print { opacity: 1; }
+.inline-price { width: 72px; padding: 2px 6px; font-size: 12px; }
+
 /* 打印历史弹层 */
 .history-modal { width: 520px; max-height: 80vh; overflow: hidden; }
 .history-tip { color: var(--muted); font-size: 12px; margin: 6px 0 10px; }

@@ -93,7 +93,7 @@ app.whenReady().then(async () => {
       "  if ((st.presets['默认'].custom || []).length !== 1) throw new Error('custom not saved into preset');",
       // 打印选项 UI：设置值并确认 currentPrintOptions 读取正确
       // （打印机下拉选真实存在的项；若无打印机则保持“系统默认”空值）
-      "  await sleep(300);", // 等 loadPrinterOptions 异步填充完成
+      "  for (let i = 0; i < 100 && !printersLoaded; i++) await sleep(50); // 等打印机下拉异步就绪",
       "  const prOpts = [...$('optPrinter').options].map(o => o.value);",
       "  log('printerOptions=' + JSON.stringify(prOpts));",
       "  const pick = prOpts.find(v => v) || '';",

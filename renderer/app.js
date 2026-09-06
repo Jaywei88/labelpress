@@ -122,7 +122,7 @@ function showToast(msg, type) {
   }, 3200);
 }
 
-// 返回 Promise<boolean>：true=用户点确定
+// 返回 Promise<boolean>：true=用户点确定（Enter=确定，Esc=取消，方向跟随焦点）
 function confirmDialog(text, title) {
   return new Promise((resolve) => {
     $('confirmText').textContent = text;
@@ -131,11 +131,20 @@ function confirmDialog(text, title) {
     const okBtn = $('btnConfirmOk');
     mask.classList.remove('hidden');
     okBtn.focus();
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); onCancel(); return; }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (document.activeElement === $('btnConfirmCancel')) onCancel();
+        else onOk();
+      }
+    };
     const cleanup = () => {
       mask.classList.add('hidden');
       okBtn.removeEventListener('click', onOk);
       $('btnConfirmCancel').removeEventListener('click', onCancel);
       mask.removeEventListener('click', onMask);
+      document.removeEventListener('keydown', onKey);
     };
     const onOk = () => { cleanup(); resolve(true); };
     const onCancel = () => { cleanup(); resolve(false); };
@@ -143,6 +152,7 @@ function confirmDialog(text, title) {
     okBtn.addEventListener('click', onOk);
     $('btnConfirmCancel').addEventListener('click', onCancel);
     mask.addEventListener('click', onMask);
+    document.addEventListener('keydown', onKey);
   });
 }
 
@@ -206,7 +216,7 @@ function renderList() {
   body.innerHTML = '';
 
   if (!list.length) {
-    body.innerHTML = '<tr class="empty-row"><td colspan="5">暂无商品，点击右上角「＋ 新增商品」开始</td></tr>';
+    body.innerHTML = '<tr class="empty-row"><td colspan="6">暂无商品，点击右上角「＋ 新增商品」开始</td></tr>';
     $('checkAll').checked = false;
     $('listCount').textContent = searchText ? '0 项' : '0 项';
     updateStatusBar();
@@ -222,10 +232,16 @@ function renderList() {
       <td title="${esc(p.name)}">${esc(p.name)}</td>
       <td title="${esc(p.sku || '')}">${esc(p.sku || '')}</td>
       <td class="col-cat" title="${esc(p.category || '')}">${esc(p.category || '')}</td>
-      <td class="col-price">${p.price !== '' && p.price != null ? '¥' + Number(p.price).toFixed(2) : ''}</td>`;
+      <td class="col-price" title="双击修改价格">${p.price !== '' && p.price != null ? '¥' + Number(p.price).toFixed(2) : '<span class="muted">—</span>'}</td>
+      <td class="col-quick"><button type="button" class="mini-btn quick-print" data-id="${p.id}" title="按当前预设和上次的打印机直接打印此商品">🖨</button></td>`;
     tr.addEventListener('click', (e) => {
       if (e.target.classList.contains('row-check')) return;
+      if (e.target.closest('.quick-print')) { quickPrint([p]); return; }
       selectProduct(p.id);
+    });
+    tr.querySelector('td.col-price').addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      startInlinePriceEdit(p);
     });
     body.appendChild(tr);
   }
@@ -236,6 +252,45 @@ function renderList() {
 function updateStatusBar() {
   $('statusCount').textContent = '共 ' + products.length + ' 个商品';
   if (dataDir) $('statusDataDir').textContent = '数据位置：' + dataDir;
+}
+
+// 行内改价：双击价格单元格 → 内嵌输入框；Enter/失焦保存，Esc 取消
+function startInlinePriceEdit(p) {
+  const td = document.querySelector(`#productBody tr[data-id="${CSS.escape(p.id)}"] td.col-price`);
+  if (!td || td.querySelector('input')) return;
+  const inp = document.createElement('input');
+  inp.type = 'number';
+  inp.step = '0.01';
+  inp.min = '0';
+  inp.value = p.price !== '' && p.price != null ? p.price : '';
+  inp.className = 'inline-price';
+  td.innerHTML = '';
+  td.appendChild(inp);
+  inp.focus();
+  inp.select();
+  let done = false;
+  const commit = async () => {
+    if (done) return;
+    done = true;
+    const v = parseFloat(inp.value);
+    const price = isNaN(v) ? '' : Math.round(v * 100) / 100;
+    if (price === '' || price === p.price) { renderList(); return; }
+    const out = await window.api.saveProduct({ ...p, price });
+    if (out && out.ok) {
+      products = out.products;
+      renderList();
+      showToast('已改价：' + (p.name || '') + ' → ¥' + Number(price).toFixed(2), 'success');
+    } else {
+      renderList();
+      showToast('改价失败', 'error');
+    }
+  };
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); commit(); }
+    else if (e.key === 'Escape') { done = true; renderList(); }
+  });
+  inp.addEventListener('blur', commit);
+  inp.addEventListener('click', (e) => e.stopPropagation());
 }
 
 /* ---------------- 表单 ---------------- */
@@ -369,15 +424,23 @@ async function saveProduct() {
     $('saveStatus').style.color = '#dc2626';
     return;
   }
+  const isNew = !selectedId; // 新增商品保存后清空表单，方便连续录入
   const out = await window.api.saveProduct(res.p);
   if (out.ok) {
     products = out.products;
     selectedId = res.p.id;
     renderList();
-    const saved = products.find((x) => x.id === selectedId);
-    if (saved) fillForm(saved);
-    $('saveStatus').textContent = '✓ 已保存';
-    $('saveStatus').style.color = '#16a34a';
+    if (isNew) {
+      const savedName = (products.find((x) => x.id === res.p.id) || {}).name || '';
+      resetForm();
+      showToast('已保存「' + savedName + '」，可继续录入', 'success');
+    } else {
+      const saved = products.find((x) => x.id === selectedId);
+      if (saved) fillForm(saved);
+      $('saveStatus').textContent = '✓ 已保存';
+      $('saveStatus').style.color = '#16a34a';
+    }
+    $('fName').focus();
   } else {
     $('saveStatus').textContent = '⚠ 保存失败';
     $('saveStatus').style.color = '#dc2626';
@@ -463,34 +526,79 @@ async function doPrint() {
   // 同步保存打印设备选项（打印机/方向/份数/静默）
   window.api.savePrintOptions(currentPrintOptions()).catch(() => {});
   try {
-    const res = await window.api.printLabels(payload, opts);
+    const res = await sendPrint(payload, opts);
     if (res && res.ok) {
       const opt = currentPrintOptions();
-      const found = printerList.find((p) => p.deviceName === opt.deviceName);
-      const name = found ? (found.displayName || found.deviceName) : (opt.deviceName || '系统默认打印机');
-      showToast(`已发送到「${name}」× ${opt.copies} 份`, 'success');
-      // 记录打印历史（含完整打印载荷，供一键原样重打）
-      window.api.savePrintHistory({
-        time: new Date().toISOString(),
-        count: payload.length,
-        names: payload.slice(0, 5).map((p) => p.name || p.sku || '未命名'),
-        copies: opt.copies,
-        deviceName: opt.deviceName,
-        landscape: opt.landscape,
-        payload,
-        settings: deepCopy(designerSettings),
-        printOptions: opt,
-      }).catch(() => {});
+      showPrintSuccess(opt);
+      recordPrintHistory(payload, opt, designerSettings);
     } else if (res && !res.ok) {
-      if (res.reason === '用户取消') showToast('打印已取消');
-      else if (res.error) showToast('打印失败：' + res.error, 'error');
-      else if (res.reason) showToast('打印失败：' + res.reason, 'error');
+      showPrintFailure(res);
     }
   } catch (e) {
     showToast('打印出错：' + (e && e.message ? e.message : e), 'error');
   } finally {
     modal.classList.add('hidden');
     $('printModal').dataset.payload = '';
+  }
+}
+
+/* ---------------- 快速打印（不打开设计器） ---------------- */
+
+// 打印发送统一出口（测试可替换此函数来拦截打印）
+function sendPrint(payload, opts) {
+  return window.api.printLabels(payload, opts);
+}
+
+// 打印成功提示（打印机显示名优先）
+function showPrintSuccess(opt) {
+  const found = printerList.find((p) => p.deviceName === opt.deviceName);
+  const name = found ? (found.displayName || found.deviceName) : (opt.deviceName || '系统默认打印机');
+  showToast(`已发送到「${name}」× ${Math.max(1, Math.round(Number(opt.copies) || 1))} 份`, 'success');
+}
+
+function showPrintFailure(res) {
+  if (!res || res.ok) return;
+  if (res.reason === '用户取消') showToast('打印已取消');
+  else if (res.error) showToast('打印失败：' + res.error, 'error');
+  else if (res.reason) showToast('打印失败：' + res.reason, 'error');
+}
+
+// 记录打印历史（含完整打印载荷，供一键原样重打）
+function recordPrintHistory(payload, opt, settings) {
+  window.api.savePrintHistory({
+    time: new Date().toISOString(),
+    count: payload.length,
+    names: payload.slice(0, 5).map((p) => p.name || p.sku || '未命名'),
+    copies: Math.max(1, Math.round(Number(opt.copies) || 1)),
+    deviceName: opt.deviceName || '',
+    landscape: !!opt.landscape,
+    payload,
+    settings: deepCopy(settings),
+    printOptions: opt,
+  }).catch(() => {});
+}
+
+// 快速打印：按当前预设布局 + 上次的打印机/方向/份数静默直出，不走设计器
+async function quickPrint(list) {
+  if (!list.length) { showToast('请先勾选要打印的商品', 'warn'); return; }
+  const { payload, failed } = preparePrintPayload(list);
+  if (!payload.length) { showToast('所选商品都无法生成条码，无法打印', 'error'); return; }
+  if (failed.length) showToast('以下商品条码无效，已跳过：\n' + failed.join('\n'), 'warn');
+  try {
+    const [saved, optRes] = await Promise.all([window.api.getPrintSettings(), window.api.getPrintOptions()]);
+    const presets = (saved && saved.presets) || {};
+    const active = (saved && saved.active) || '默认';
+    const settings = LabelRender.normalizeSettings(presets[active] || { labelSize: '60x40' });
+    const opt = (optRes && optRes.options) || {};
+    const res = await sendPrint(payload, { settings, printOptions: opt });
+    if (res && res.ok) {
+      showPrintSuccess(opt);
+      recordPrintHistory(payload, opt, settings);
+    } else {
+      showPrintFailure(res);
+    }
+  } catch (e) {
+    showToast('快速打印出错：' + (e && e.message ? e.message : e), 'error');
   }
 }
 
@@ -561,7 +669,7 @@ async function reprintHistory(idx) {
   }
   const copies = Math.max(1, Math.round(Number(h.copies) || 1));
   try {
-    const res = await window.api.printLabels(h.payload, {
+    const res = await sendPrint(h.payload, {
       settings: h.settings,
       printOptions: { ...(h.printOptions || {}), copies },
     });
@@ -611,20 +719,23 @@ const ELEMENT_LABELS = {
 };
 
 const ELEMENT_FIELDS = {
-  name:    ['x', 'y', 'w', 'fontSize', 'align', 'bold', 'rot', 'vertical'],
-  price:   ['x', 'y', 'w', 'fontSize', 'align', 'bold', 'rot', 'vertical'],
-  sku:     ['x', 'y', 'w', 'fontSize', 'align', 'bold', 'rot', 'vertical'],
+  name:    ['x', 'y', 'w', 'fontSize', 'align', 'bold', 'rot', 'vertical', 'font'],
+  price:   ['x', 'y', 'w', 'fontSize', 'align', 'bold', 'rot', 'vertical', 'font'],
+  sku:     ['x', 'y', 'w', 'fontSize', 'align', 'bold', 'rot', 'vertical', 'font'],
   barcode: ['x', 'y', 'w', 'h', 'fontSize', 'align', 'rot'],
 };
 
 // 自定义元素可编辑字段（name 元素名称、text 文本、color 颜色走特殊控件）
-const CUSTOM_FIELDS = ['name', 'text', 'x', 'y', 'w', 'fontSize', 'align', 'bold', 'color', 'rot', 'vertical'];
+const CUSTOM_FIELDS = ['name', 'text', 'x', 'y', 'w', 'fontSize', 'align', 'bold', 'color', 'rot', 'vertical', 'font'];
 
 const FIELD_LABELS = {
   x: 'X 位置', y: 'Y 位置', w: '宽度', h: '高度',
   fontSize: '字号', align: '对齐', bold: '加粗',
-  text: '文本内容', color: '颜色', name: '元素名称', rot: '旋转', vertical: '排列',
+  text: '文本内容', color: '颜色', name: '元素名称', rot: '旋转', vertical: '排列', font: '字体',
 };
+
+// 常用系统字体（Windows 自带；默认=微软雅黑栈）
+const FONT_OPTIONS = ['微软雅黑', '黑体', '宋体', '楷体', '仿宋', '隶书', '幼圆', 'Arial', 'Times New Roman'];
 
 // 根据 key 取元素：'custom:<id>' → 自定义元素；其他 → 固定元素
 function elementByKey(key) {
@@ -861,24 +972,48 @@ async function openDesigner(products) {
   }
   // 尺寸下拉同步到当前预设
   $('printSize').value = designerSettings.labelSize;
-  // 打印选项：先载全局记忆，再让当前预设记忆的选项（若有）覆盖
-  await loadPrinterOptions();
-  applyPresetPrintOptions();
+  // 打印选项：方向/份数/偏移同步应用（预设优先，回退全局"上次使用"），设计器立即打开；
+  // 打印机枚举较慢，异步补填下拉后再校正一次（不阻塞打开）
+  printersLoaded = false;
+  printerOptions = (await window.api.getPrintOptions()).options || {};
+  applyPrintOptionControls(effectivePrintOptions());
   buildPresetSelect();
   buildElementPanel();
   // 先显示弹窗再渲染预览：隐藏状态下读不到面板尺寸，自适应缩放会错（首次打开缩放变 0.4 的老问题）
   $('printModal').classList.remove('hidden');
   renderPreview();
+  loadPrinterOptions().then(() => {
+    applyPrintOptionControls(effectivePrintOptions());
+    renderPreview();
+  });
 }
 
-// ---------------- 打印选项（打印机/方向/份数/静默） ----------------
+// ---------------- 打印选项（打印机/方向/份数/静默/偏移） ----------------
 
 let printerList = [];       // 系统打印机列表缓存
-let printerOptions = {};    // 从磁盘加载的打印选项
+let printerOptions = {};    // 从磁盘加载的全局打印选项（print-options.json）
+let printersLoaded = false; // 打印机下拉是否已就绪（设计器打开不阻塞，测试等待用）
 
+// 当前生效的选项：当前预设记忆的优先，否则用全局"上次使用"
+function effectivePrintOptions() {
+  return (designerSettings && designerSettings.printOptions) || printerOptions;
+}
+
+// 把选项写入控件（deviceName 需打印机列表就绪后才能校验选中，否则留给系统默认）
+function applyPrintOptionControls(po) {
+  const o = po || {};
+  if (o.deviceName && printerList.some((p) => p.deviceName === o.deviceName)) {
+    $('optPrinter').value = o.deviceName;
+  }
+  $('optLandscape').value = o.landscape ? '1' : '0';
+  $('optCopies').value = Math.max(1, Math.round(Number(o.copies) || 1));
+  $('optSilent').checked = o.silent !== false;
+  $('optOffX').value = Number(o.offsetX) || 0;
+  $('optOffY').value = Number(o.offsetY) || 0;
+}
+
+// 枚举打印机较慢：只负责填下拉，随后按"预设 > 全局"优先级应用选项
 async function loadPrinterOptions() {
-  printerOptions = (await window.api.getPrintOptions()).options || {};
-  // 打印机下拉：选项 = 系统打印机 + 「系统默认」
   const res = await window.api.getPrinters();
   printerList = res.printers || [];
   const sel = $('optPrinter');
@@ -895,17 +1030,8 @@ async function loadPrinterOptions() {
     opt.textContent = o.label;
     sel.appendChild(opt);
   }
-  // 应用保存过的值：上次打印机仍在列表则选中，否则回退系统默认
-  const saved = printerOptions.deviceName || '';
-  if (saved && printerList.some((p) => p.deviceName === saved)) {
-    sel.value = saved;
-  } else {
-    const def = printerList.find((p) => p.isDefault);
-    sel.value = def ? def.deviceName : '';
-  }
-  $('optLandscape').value = printerOptions.landscape ? '1' : '0';
-  $('optCopies').value = Math.max(1, Math.round(Number(printerOptions.copies) || 1));
-  $('optSilent').checked = printerOptions.silent === false ? false : true;
+  applyPrintOptionControls(effectivePrintOptions());
+  printersLoaded = true;
 }
 
 function currentPrintOptions() {
@@ -922,20 +1048,6 @@ function currentPrintOptions() {
     offsetX: clampOff($('optOffX').value),
     offsetY: clampOff($('optOffY').value),
   };
-}
-
-// 当前预设记忆了打印选项则覆盖控件（旧预设没记忆 → 沿用全局"上次使用"）
-function applyPresetPrintOptions() {
-  const po = designerSettings && designerSettings.printOptions;
-  if (!po) return;
-  if (po.deviceName && printerList.some((p) => p.deviceName === po.deviceName)) {
-    $('optPrinter').value = po.deviceName;
-  }
-  $('optLandscape').value = po.landscape ? '1' : '0';
-  $('optCopies').value = Math.max(1, Math.round(Number(po.copies) || 1));
-  $('optSilent').checked = po.silent !== false;
-  $('optOffX').value = Number(po.offsetX) || 0;
-  $('optOffY').value = Number(po.offsetY) || 0;
 }
 
 function savePrinterOptionsNow() {
@@ -1010,7 +1122,7 @@ async function saveAsBlankPreset() {
   activePreset = trimmed;
   designerSettings = LabelRender.normalizeSettings(blank);
   $('printSize').value = designerSettings.labelSize;
-  applyPresetPrintOptions();
+  applyPrintOptionControls(effectivePrintOptions());
   resetUndo();
   await persistPresets();
   buildPresetSelect();
@@ -1033,7 +1145,7 @@ async function deletePreset() {
   activePreset = Object.keys(printPresets)[0];
   designerSettings = LabelRender.normalizeSettings(printPresets[activePreset]);
   $('printSize').value = designerSettings.labelSize;
-  applyPresetPrintOptions();
+  applyPrintOptionControls(effectivePrintOptions());
   resetUndo();
   await persistPresets();
   buildPresetSelect();
@@ -1237,6 +1349,15 @@ function buildFieldControl(key, field, getEl) {
     bindFocus(sel);
     sel.addEventListener('change', () => {
       apply(() => { getEl().vertical = sel.value === '1'; });
+    });
+    lab.appendChild(sel);
+  } else if (field === 'font') {
+    const sel = document.createElement('select');
+    sel.innerHTML = '<option value="">默认</option>' + FONT_OPTIONS.map((f) => `<option value="${f}">${f}</option>`).join('');
+    sel.value = getEl().font || '';
+    bindFocus(sel);
+    sel.addEventListener('change', () => {
+      apply(() => { getEl().font = sel.value; });
     });
     lab.appendChild(sel);
   } else if (field === 'name') {
@@ -1495,7 +1616,7 @@ function clearGuides() {
   canvas.querySelectorAll('.guide-v, .guide-h').forEach((n) => n.remove());
 }
 
-// 生成单个标签内容的 HTML（预览用，带 data-key 供交互）；rotStyle/verticalStyle 与打印端同规则
+// 生成单个标签内容的 HTML（预览用，带 data-key 供交互）；与打印端同规则（旋转/竖排/字体/占位符）
 function rotStyle(el) {
   return el.rot ? `transform-origin:center;transform:rotate(${el.rot}deg);` : '';
 }
@@ -1508,13 +1629,13 @@ function buildLabelBody(sample) {
   const el = designerSettings.elements;
   const body = [];
   if (el.name.visible && sample.name) {
-    body.push(`<div class="el el-name" data-key="name" style="left:${unitMM(el.name.x)};top:${unitMM(el.name.y)};width:${unitMM(el.name.w)};font-size:${unitMM(el.name.fontSize)};text-align:${el.name.align};font-weight:${el.name.bold ? 'bold' : 'normal'};color:${el.name.color};${rotStyle(el.name)}${verticalStyle(el.name)}">${LabelRender.esc(sample.name)}</div>`);
+    body.push(`<div class="el el-name" data-key="name" style="left:${unitMM(el.name.x)};top:${unitMM(el.name.y)};width:${unitMM(el.name.w)};font-size:${unitMM(el.name.fontSize)};text-align:${el.name.align};font-weight:${el.name.bold ? 'bold' : 'normal'};color:${el.name.color};${rotStyle(el.name)}${verticalStyle(el.name)}${LabelRender.fontCss(el.name)}">${LabelRender.esc(sample.name)}</div>`);
   }
   if (el.price.visible && sample.price !== '' && sample.price != null) {
-    body.push(`<div class="el el-price" data-key="price" style="left:${unitMM(el.price.x)};top:${unitMM(el.price.y)};width:${unitMM(el.price.w)};font-size:${unitMM(el.price.fontSize)};text-align:${el.price.align};font-weight:${el.price.bold ? 'bold' : 'normal'};color:${el.price.color};${rotStyle(el.price)}${verticalStyle(el.price)}">¥${Number(sample.price).toFixed(2)}</div>`);
+    body.push(`<div class="el el-price" data-key="price" style="left:${unitMM(el.price.x)};top:${unitMM(el.price.y)};width:${unitMM(el.price.w)};font-size:${unitMM(el.price.fontSize)};text-align:${el.price.align};font-weight:${el.price.bold ? 'bold' : 'normal'};color:${el.price.color};${rotStyle(el.price)}${verticalStyle(el.price)}${LabelRender.fontCss(el.price)}">¥${Number(sample.price).toFixed(2)}</div>`);
   }
   if (el.sku.visible && sample.sku) {
-    body.push(`<div class="el el-sku" data-key="sku" style="left:${unitMM(el.sku.x)};top:${unitMM(el.sku.y)};width:${unitMM(el.sku.w)};font-size:${unitMM(el.sku.fontSize)};text-align:${el.sku.align};font-weight:${el.sku.bold ? 'bold' : 'normal'};color:${el.sku.color};${rotStyle(el.sku)}${verticalStyle(el.sku)}">${LabelRender.esc(sample.sku)}</div>`);
+    body.push(`<div class="el el-sku" data-key="sku" style="left:${unitMM(el.sku.x)};top:${unitMM(el.sku.y)};width:${unitMM(el.sku.w)};font-size:${unitMM(el.sku.fontSize)};text-align:${el.sku.align};font-weight:${el.sku.bold ? 'bold' : 'normal'};color:${el.sku.color};${rotStyle(el.sku)}${verticalStyle(el.sku)}${LabelRender.fontCss(el.sku)}">${LabelRender.esc(sample.sku)}</div>`);
   }
   if (el.barcode.visible && sample.barcodeSvg) {
     body.push(`<img class="el el-barcode" data-key="barcode" src="${sample.barcodeSvg}" alt="barcode" style="left:${unitMM(el.barcode.x)};top:${unitMM(el.barcode.y)};width:${unitMM(el.barcode.w)};height:${unitMM(el.barcode.h)};${rotStyle(el.barcode)}">`);
@@ -1525,7 +1646,7 @@ function buildLabelBody(sample) {
   // 自定义元素
   (designerSettings.custom || []).forEach((c) => {
     if (!c.visible) return;
-    body.push(`<div class="el el-custom" data-key="custom:${c.id}" style="left:${unitMM(c.x)};top:${unitMM(c.y)};width:${unitMM(c.w)};font-size:${unitMM(c.fontSize)};text-align:${c.align};font-weight:${c.bold ? 'bold' : 'normal'};color:${c.color};${rotStyle(c)}${verticalStyle(c)}">${LabelRender.esc(c.text)}</div>`);
+    body.push(`<div class="el el-custom" data-key="custom:${c.id}" style="left:${unitMM(c.x)};top:${unitMM(c.y)};width:${unitMM(c.w)};font-size:${unitMM(c.fontSize)};text-align:${c.align};font-weight:${c.bold ? 'bold' : 'normal'};color:${c.color};${rotStyle(c)}${verticalStyle(c)}${LabelRender.fontCss(c)}">${LabelRender.esc(LabelRender.resolvePlaceholders(c.text))}</div>`);
   });
   return body.join('\n');
 }
@@ -1809,7 +1930,7 @@ function syncElementInputs(key) {
   if (!el) return;
   const fields = key.startsWith('custom:') ? CUSTOM_FIELDS : ELEMENT_FIELDS[key];
   const inputs = card.querySelectorAll('input[type=number]');
-  const fieldOrder = fields.filter((f) => f !== 'align' && f !== 'bold' && f !== 'text' && f !== 'color' && f !== 'name' && f !== 'rot' && f !== 'vertical');
+  const fieldOrder = fields.filter((f) => f !== 'align' && f !== 'bold' && f !== 'text' && f !== 'color' && f !== 'name' && f !== 'rot' && f !== 'vertical' && f !== 'font');
   inputs.forEach((inp, i) => {
     const f = fieldOrder[i];
     if (f) inp.value = el[f];
@@ -1872,6 +1993,10 @@ function bindEvents() {
     openPrintModal(list);
   });
 
+  $('btnQuickPrint').addEventListener('click', () => {
+    quickPrint(getCheckedProducts());
+  });
+
   $('btnPrintAll').addEventListener('click', () => {
     openPrintModal([...filteredProducts()]);
   });
@@ -1914,7 +2039,7 @@ function bindEvents() {
     activePreset = name;
     designerSettings = LabelRender.normalizeSettings(printPresets[name]);
     $('printSize').value = designerSettings.labelSize;
-    applyPresetPrintOptions();
+    applyPrintOptionControls(effectivePrintOptions());
     resetUndo();
     buildElementPanel();
     renderPreview();
@@ -1976,6 +2101,11 @@ function bindEvents() {
   // 打印历史
   $('btnHistory').addEventListener('click', openHistoryModal);
   $('btnHistoryClose').addEventListener('click', () => $('historyModal').classList.add('hidden'));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('historyModal').classList.contains('hidden')) {
+      $('historyModal').classList.add('hidden');
+    }
+  });
   $('historyModal').addEventListener('click', (e) => {
     if (e.target === $('historyModal')) $('historyModal').classList.add('hidden');
   });
@@ -2126,6 +2256,13 @@ function bindEvents() {
   $('btnBackup').addEventListener('click', doBackup);
   $('btnRestore').addEventListener('click', doRestore);
   $('btnOpenFolder').addEventListener('click', () => window.api.openDataFolder());
+
+  // 表单内 Enter 直接保存（备注 textarea 除外），配合保存后自动聚焦名称框连续录入
+  ['fName', 'fSku', 'fCategory', 'fUnit', 'fPrice', 'fSpec', 'fBarcode'].forEach((id) => {
+    $(id).addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); saveProduct(); }
+    });
+  });
 
   ['fName', 'fSku', 'fBarcode', 'fBarcodeType'].forEach((id) => {
     $(id).addEventListener('input', updateBarcodePreview);
