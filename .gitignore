@@ -3,7 +3,10 @@ node_modules/
 
 # Build output
 dist/
-build/
+# build/ 只放图标源（icon.ico/png 入库），其余构建产物忽略
+build/*
+!build/icon.ico
+!build/icon.png
 out/
 
 # Runtime data & logs

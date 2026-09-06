@@ -11,6 +11,7 @@ const os = require('os');
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dlabel-editor-v2-'));
 process.env.PORTABLE_EXECUTABLE_DIR = tmpRoot;
+const tmpForward = tmpRoot.replace(/\\/g, '/'); // 注入 renderer 的路径（正斜杠）
 
 require('../main.js');
 
@@ -184,11 +185,107 @@ app.whenReady().then(async () => {
       "  await dpBlank; await sleep(100);",
       "  if (activePreset !== '默认') throw new Error('should fall back to 默认 after delete');",
       "  log('M blank preset ok');",
+      // N. SVG 矢量条码
+      "  const svgUrl = barcodeSvgString('CODE128', 'T1');",
+      "  log('N barcode=' + svgUrl.slice(0, 44));",
+      "  if (!svgUrl.startsWith('data:image/svg+xml')) throw new Error('barcode should be svg data url: ' + svgUrl.slice(0, 30));",
+      // O. 元素旋转（90°：视觉盒宽高互换，钳制按视觉盒计算）
+      "  const nameEl2 = designerSettings.elements.name;",
+      "  nameEl2.rot = 90;",
+      "  renderPreview(); await sleep(80);",
+      "  if (!document.querySelector('.el-name').style.transform.includes('rotate(90deg)')) throw new Error('preview rotate missing');",
+      "  const e90 = elementEdges(nameEl2, 'name');",
+      "  log('O rot90 vw=' + e90.vw + ' vh=' + e90.vh + ' vx=' + e90.vx + ' vy=' + e90.vy);",
+      "  if (!(e90.vw === e90.h && e90.vh === e90.w)) throw new Error('rotated visual bbox wrong');",
+      "  const snapR = computeSnap('name', nameEl2, 200, 5);",
+      "  const eAfter = elementEdges({ ...nameEl2, x: snapR.tx, y: snapR.ty }, 'name');",
+      "  if (eAfter.right > curLabelW + 0.001 || eAfter.left < -0.001) throw new Error('rotated clamp wrong: right=' + eAfter.right);",
+      "  nameEl2.rot = 0; renderPreview(); await sleep(60);",
+      "  log('O rotation ok');",
+      // P. 打印偏移补偿
+      "  $('optOffX').value = '2.5';",
+      "  $('optOffX').dispatchEvent(new Event('input'));",
+      "  $('optOffY').value = '-1';",
+      "  $('optOffY').dispatchEvent(new Event('input'));",
+      "  await sleep(60);",
+      "  const co2 = currentPrintOptions();",
+      "  if (co2.offsetX !== 2.5 || co2.offsetY !== -1) throw new Error('offset inputs not read');",
+      "  if (!designerSettings.printOptions || designerSettings.printOptions.offsetX !== 2.5) throw new Error('offset not bound to preset');",
+      "  const htmlOff = LabelRender.buildPrintHtml([{ name: 'A', sku: 'S', price: 1, barcodeSvg: '', barcodeText: '' }], { labelSize: '60x40' }, false, { x: 2.5, y: -1 });",
+      "  if (!htmlOff.includes('left: 2.5mm; top: -1mm')) throw new Error('offset css missing in print html');",
+      "  $('optOffX').value = '0'; $('optOffX').dispatchEvent(new Event('input'));",
+      "  $('optOffY').value = '0'; $('optOffY').dispatchEvent(new Event('input'));",
+      "  log('P offset ok');",
+      // Q. 打印历史保存/读取/弹窗渲染
+      "  await window.api.savePrintHistory({ time: new Date().toISOString(), count: 2, names: ['商品甲', '商品乙'], copies: 2, deviceName: '', landscape: false, payload: [{ id: 'h1', name: '商品甲', sku: 'H1', barcodeSvg: '' }], settings: { labelSize: '60x40' }, printOptions: { copies: 2 } });",
+      "  const hist = await window.api.getPrintHistory();",
+      "  if (!hist.history.length || hist.history[0].count !== 2) throw new Error('history save/get failed');",
+      "  await openHistoryModal(); await sleep(80);",
+      "  if (document.querySelectorAll('#historyList .history-item').length !== 1) throw new Error('history modal should render 1 item');",
+      "  $('btnHistoryClose').click();",
+      "  log('Q history ok');",
+      // R. 导出 PDF（测试钩子 filePath，免对话框）
+      `  const pdfRes = await window.api.exportPdf({ products: [{ id: 'p1', name: 'PDF商品', sku: 'P1', barcodeSvg: '', barcodeText: '' }], opts: { settings: { labelSize: '60x40' }, printOptions: {} }, filePath: '${tmpForward}/test-export.pdf' });`,
+      "  if (!pdfRes.ok) throw new Error('exportPdf failed: ' + (pdfRes.error || 'unknown'));",
+      "  log('R pdf=' + pdfRes.path);",
+      // S. 竖排：字直立逐字下排（writing-mode vertical-lr），实测高度 ≈ 字数×字号
+      "  addCustomElement(); await sleep(80);",
+      "  const vEl = elementByKey(selectedElement);",
+      "  vEl.text = '农夫山泉';",
+      "  vEl.fontSize = 3;",
+      "  vEl.vertical = true;",
+      "  renderPreview(); await sleep(100);",
+      "  const vNode = [...document.querySelectorAll('.el-custom')].pop();",
+      "  if (!vNode.style.writingMode.includes('vertical')) throw new Error('vertical writing-mode missing: ' + vNode.style.writingMode);",
+      "  const vH = elementEdges(vEl, selectedElement).h;",
+      "  log('S vertical h=' + vH + 'mm (4 chars x 3mm ≈ 12mm)');",
+      "  if (vH < 9) throw new Error('vertical measured height too small: ' + vH);",
+      "  const htmlV = LabelRender.buildPrintHtml([{ name: 'A', sku: 'S', price: 1, barcodeSvg: '', barcodeText: '' }], { labelSize: '60x40', custom: [{ text: '农夫山泉', vertical: true, x: 2, y: 2, w: 10, fontSize: 3 }] }, false);",
+      "  if (!htmlV.includes('writing-mode:vertical-lr')) throw new Error('vertical css missing in print html');",
+      "  log('S vertical ok');",
+      // T. 列表排序 / 分类筛选真实生效（回归：change 事件必须写入状态变量）
+      "  await window.api.saveProduct({ name: '苹果', sku: 'T-A', category: '水果', price: 5.5, barcodeType: 'CODE128', barcode: 'TA1' });",
+      "  await window.api.saveProduct({ name: '香蕉', sku: 'T-B', category: '水果', price: 2.2, barcodeType: 'CODE128', barcode: 'TB1' });",
+      "  await window.api.saveProduct({ name: '薯片', sku: 'T-C', category: '零食', price: 8.8, barcodeType: 'CODE128', barcode: 'TC1' });",
+      "  products = (await window.api.loadData()).products || []; // 表单保存会同步内存，这里直接 IPC 需手动拉一次",
+      "  renderList(); await sleep(80);",
+      "  const rowNames = () => [...document.querySelectorAll('#productBody tr td:nth-child(2)')].map((td) => td.textContent);",
+      "  $('sortSelect').value = 'priceAsc';",
+      "  $('sortSelect').dispatchEvent(new Event('change'));",
+      "  await sleep(80);",
+      "  const asc = rowNames();",
+      "  log('T priceAsc=' + asc.join(','));",
+      "  if (asc[0] !== '香蕉') throw new Error('priceAsc first should be 香蕉(2.2): ' + asc.join(','));",
+      "  $('sortSelect').value = 'priceDesc';",
+      "  $('sortSelect').dispatchEvent(new Event('change'));",
+      "  await sleep(80);",
+      "  if (rowNames()[0] !== '薯片') throw new Error('priceDesc first should be 薯片(8.8): ' + rowNames().join(','));",
+      "  $('sortSelect').value = 'name';",
+      "  $('sortSelect').dispatchEvent(new Event('change'));",
+      "  await sleep(80);",
+      "  const byName = rowNames();",
+      "  const sorted = [...byName].sort((a, b) => a.localeCompare(b, 'zh-CN'));",
+      "  if (byName.join() !== sorted.join()) throw new Error('name sort wrong: ' + byName.join(','));",
+      "  $('categoryFilter').value = '零食';",
+      "  $('categoryFilter').dispatchEvent(new Event('change'));",
+      "  await sleep(80);",
+      "  const catRows = rowNames();",
+      "  log('T category=零食 rows=' + catRows.join(','));",
+      "  if (!(catRows.length === 1 && catRows[0] === '薯片')) throw new Error('category filter wrong: ' + catRows.join(','));",
+      "  $('categoryFilter').value = '';",
+      "  $('categoryFilter').dispatchEvent(new Event('change'));",
+      "  $('sortSelect').value = 'default';",
+      "  $('sortSelect').dispatchEvent(new Event('change'));",
+      "  log('T sort/filter ok');",
       "  return JSON.stringify({ ok: true, logs });",
       '})()',
     ].join('\n');
 
     const out = await win.webContents.executeJavaScript(injected);
+    // PDF 导出落盘校验（主进程侧）
+    if (!fs.existsSync(path.join(tmpRoot, 'test-export.pdf'))) {
+      throw new Error('PDF file not created at ' + tmpRoot);
+    }
     console.log('EDITOR_V2=' + out);
     result = 'OK';
   } catch (e) {

@@ -58,6 +58,8 @@
       align: ['left', 'center', 'right'].includes(el.align) ? el.align : 'left',
       bold: !!el.bold,
       color: el.color || '#000000',
+      rot: normalizeRot(el.rot),
+      vertical: !!el.vertical,
     };
   }
 
@@ -66,7 +68,7 @@
     return isFinite(n) && n >= 0 ? Math.round(n * 10) / 10 : def;
   }
 
-  // 打印设备选项（打印机/方向/份数/静默）随预设记忆；无输入时返回 null（旧预设回退全局记忆）
+  // 打印设备选项（打印机/方向/份数/静默/偏移）随预设记忆；无输入时返回 null（旧预设回退全局记忆）
   function normalizePrintOptions(o) {
     if (!o || typeof o !== 'object') return null;
     return {
@@ -74,7 +76,21 @@
       landscape: !!o.landscape,
       copies: Math.max(1, Math.min(999, Math.round(Number(o.copies) || 1))),
       silent: o.silent === false ? false : true,
+      offsetX: clampOffset(o.offsetX),
+      offsetY: clampOffset(o.offsetY),
     };
+  }
+
+  function clampOffset(v) {
+    const n = Number(v);
+    if (!isFinite(n)) return 0;
+    return Math.max(-20, Math.min(20, Math.round(n * 10) / 10));
+  }
+
+  // 元素旋转角度：只允许 0/90/180/270（度），覆盖竖排文本等常见需求
+  function normalizeRot(v) {
+    const n = Number(v) || 0;
+    return [90, 180, 270].includes(n) ? n : 0;
   }
 
   const DEFAULT_ELEMENTS = {
@@ -152,13 +168,14 @@
 
   function round1(v) { return Math.round(v * 10) / 10; }
 
-  // 深合并：把 defaults 与 user 合并，补齐缺失字段
+  // 深合并：把 defaults 与 user 合并，补齐缺失字段（含旋转角度）
   function mergeElements(defaults, user) {
     const out = {};
     for (const k of ELEMENT_KEYS) {
       const d = defaults[k];
       const u = (user && user[k]) || {};
       out[k] = { ...d, ...u };
+      out[k].rot = normalizeRot(out[k].rot);
     }
     return out;
   }
@@ -188,41 +205,54 @@
   }
 
   // 单个标签的 HTML。unit(mmV) 把 mm 数值换成目标单位字符串（打印 'mm'，预览 'px'）
+  // rotTransform：旋转元素的 CSS 片段（绕中心旋转，视觉包围盒在 elementEdges 里对应换算）
+  function rotTransform(el) {
+    return el.rot ? `transform-origin:center;transform:rotate(${el.rot}deg);` : '';
+  }
+
+  // 竖排：字直立、逐字从上往下（writing-mode vertical-lr 保证首列贴盒左缘；upright 让数字/字母也直立）
+  function verticalStyle(el) {
+    return el.vertical ? 'writing-mode:vertical-lr;text-orientation:upright;' : '';
+  }
+
   function renderLabelHTML(p, elements, custom, unit) {
     const parts = [];
     const e = elements;
 
     if (e.name.visible && p.name) {
-      parts.push(`<div class="el el-name" style="left:${unit(e.name.x)};top:${unit(e.name.y)};width:${unit(e.name.w)};font-size:${unit(e.name.fontSize)};text-align:${e.name.align};font-weight:${e.name.bold ? 'bold' : 'normal'};color:${e.name.color};">${esc(p.name)}</div>`);
+      parts.push(`<div class="el el-name" style="left:${unit(e.name.x)};top:${unit(e.name.y)};width:${unit(e.name.w)};font-size:${unit(e.name.fontSize)};text-align:${e.name.align};font-weight:${e.name.bold ? 'bold' : 'normal'};color:${e.name.color};${rotTransform(e.name)}${verticalStyle(e.name)}">${esc(p.name)}</div>`);
     }
     if (e.price.visible && p.price !== '' && p.price != null) {
-      parts.push(`<div class="el el-price" style="left:${unit(e.price.x)};top:${unit(e.price.y)};width:${unit(e.price.w)};font-size:${unit(e.price.fontSize)};text-align:${e.price.align};font-weight:${e.price.bold ? 'bold' : 'normal'};color:${e.price.color};">¥${Number(p.price).toFixed(2)}</div>`);
+      parts.push(`<div class="el el-price" style="left:${unit(e.price.x)};top:${unit(e.price.y)};width:${unit(e.price.w)};font-size:${unit(e.price.fontSize)};text-align:${e.price.align};font-weight:${e.price.bold ? 'bold' : 'normal'};color:${e.price.color};${rotTransform(e.price)}${verticalStyle(e.price)}">¥${Number(p.price).toFixed(2)}</div>`);
     }
     if (e.sku.visible && p.sku) {
-      parts.push(`<div class="el el-sku" style="left:${unit(e.sku.x)};top:${unit(e.sku.y)};width:${unit(e.sku.w)};font-size:${unit(e.sku.fontSize)};text-align:${e.sku.align};font-weight:${e.sku.bold ? 'bold' : 'normal'};color:${e.sku.color};">${esc(p.sku)}</div>`);
+      parts.push(`<div class="el el-sku" style="left:${unit(e.sku.x)};top:${unit(e.sku.y)};width:${unit(e.sku.w)};font-size:${unit(e.sku.fontSize)};text-align:${e.sku.align};font-weight:${e.sku.bold ? 'bold' : 'normal'};color:${e.sku.color};${rotTransform(e.sku)}${verticalStyle(e.sku)}">${esc(p.sku)}</div>`);
     }
     if (e.barcode.visible && p.barcodeSvg) {
-      parts.push(`<img class="el el-barcode" src="${p.barcodeSvg}" alt="barcode" style="left:${unit(e.barcode.x)};top:${unit(e.barcode.y)};width:${unit(e.barcode.w)};height:${unit(e.barcode.h)};">`);
+      parts.push(`<img class="el el-barcode" src="${p.barcodeSvg}" alt="barcode" style="left:${unit(e.barcode.x)};top:${unit(e.barcode.y)};width:${unit(e.barcode.w)};height:${unit(e.barcode.h)};${rotTransform(e.barcode)}">`);
       // 条码下方数字（HTML 文本渲染，清晰可调）
       if (p.barcodeText && e.barcode.fontSize > 0) {
-        parts.push(`<div class="el el-barcode-text" style="left:${unit(e.barcode.x)};top:${unit(e.barcode.y + e.barcode.h)};width:${unit(e.barcode.w)};font-size:${unit(e.barcode.fontSize)};text-align:${e.barcode.align};">${esc(p.barcodeText)}</div>`);
+        parts.push(`<div class="el el-barcode-text" style="left:${unit(e.barcode.x)};top:${unit(e.barcode.y + e.barcode.h)};width:${unit(e.barcode.w)};font-size:${unit(e.barcode.fontSize)};text-align:${e.barcode.align};${rotTransform({ rot: e.barcode.rot })}">${esc(p.barcodeText)}</div>`);
       }
     }
-    // 自定义元素（自由文本，可任意添加/复制/移动）
+    // 自定义元素（自由文本，可任意添加/复制/移动/旋转）
     for (const c of custom || []) {
       if (!c.visible) continue;
-      parts.push(`<div class="el el-custom" style="left:${unit(c.x)};top:${unit(c.y)};width:${unit(c.w)};font-size:${unit(c.fontSize)};text-align:${c.align};font-weight:${c.bold ? 'bold' : 'normal'};color:${c.color};">${esc(c.text)}</div>`);
+      parts.push(`<div class="el el-custom" style="left:${unit(c.x)};top:${unit(c.y)};width:${unit(c.w)};font-size:${unit(c.fontSize)};text-align:${c.align};font-weight:${c.bold ? 'bold' : 'normal'};color:${c.color};${rotTransform(c)}${verticalStyle(c)}">${esc(c.text)}</div>`);
     }
     return parts.join('\n');
   }
 
   // 打印用完整 HTML（精确 mm 单位）
   // forceLandscape：A4 横向时网格重排为 4 列、@page 横放（热敏标签横向由 Electron 打印选项旋转，CSS 不变）
-  function buildPrintHtml(products, settings, forceLandscape) {
+  // offset：打印偏移补偿 {x,y} mm（热敏打印机固定偏移校正），整体平移内容不影响分页
+  function buildPrintHtml(products, settings, forceLandscape, offset) {
     settings = normalizeSettings(settings);
     const cfg = SIZE_CFG[settings.labelSize];
     const isA4 = settings.labelSize === 'a4';
     const landscape = !!(forceLandscape || (settings.printOptions && settings.printOptions.landscape));
+    const ox = clampOffset(offset && offset.x);
+    const oy = clampOffset(offset && offset.y);
     const labelW = isA4 ? A4_LABEL_W : cfg.w;
     const labelH = isA4 ? A4_LABEL_H : cfg.h;
     const mm = (v) => v + 'mm';
@@ -235,9 +265,10 @@
       ? '@page { size: A4 landscape; margin: 8mm; }'
       : cfg.page;
     // A4 网格列数：纵向 3 列（3×60+2×5=190 ≤ 194），横向 4 列（4×60+3×5=255 ≤ 281）
+    const offsetCss = (ox || oy) ? ` position: relative; left: ${ox}mm; top: ${oy}mm;` : '';
     const sheetStyle = isA4
-      ? `.labels { display: grid; grid-template-columns: repeat(${landscape ? 4 : 3}, ${A4_LABEL_W}mm); gap: 5mm; justify-content: start; }`
-      : `.labels { display: flex; flex-direction: column; } .label { page-break-after: always; }`;
+      ? `.labels { display: grid; grid-template-columns: repeat(${landscape ? 4 : 3}, ${A4_LABEL_W}mm); gap: 5mm; justify-content: start;${offsetCss} }`
+      : `.labels { display: flex; flex-direction: column;${offsetCss} } .label { page-break-after: always; }`;
 
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -289,6 +320,7 @@
     normalizeSettings,
     normalizePrintOptions,
     normalizeCustomElement,
+    normalizeRot,
     newCustomId,
     renderLabelHTML,
     buildPrintHtml,

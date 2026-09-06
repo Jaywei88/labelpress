@@ -88,19 +88,24 @@ function buildBarcode(type, value) {
   return { ok: true, canvas, value: norm.value, full: norm.full };
 }
 
-// 生成条码图片的 data URL（canvas 渲染 → PNG dataURL，仅供条码竖条，数字由 HTML 渲染）
+// 生成条码矢量图（SVG dataURL，任意尺寸打印都锐利；数字由 HTML 渲染）
 function barcodeSvgString(type, value) {
   const norm = normalizeBarcode(type, value);
   if (!norm.ok) return '';
-  const canvas = document.createElement('canvas');
-  JsBarcode(canvas, norm.value, {
-    format: type,
-    displayValue: false,
-    width: 8,
-    height: 180,
-    margin: 4,
-  });
-  return canvas.toDataURL('image/png');
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  try {
+    JsBarcode(svg, norm.value, {
+      format: type,
+      displayValue: false,
+      width: 2,
+      height: 60,
+      margin: 2,
+    });
+  } catch (e) {
+    return '';
+  }
+  const xml = new XMLSerializer().serializeToString(svg);
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
 }
 
 /* ---------------- 非阻塞提示（替代 alert / confirm） ---------------- */
@@ -143,17 +148,59 @@ function confirmDialog(text, title) {
 
 /* ---------------- 状态与列表 ---------------- */
 
+let filterCategory = '';   // 分类筛选值（'' = 全部）
+let sortMode = 'default';  // 排序：default/name/priceAsc/priceDesc/updated
+let lastCatsKey = null;    // 分类下拉自重建检测（商品分类集合变化才重建）
+
 function filteredProducts() {
+  let list = products;
   const q = searchText.trim().toLowerCase();
-  if (!q) return products;
-  return products.filter((p) =>
-    (p.name || '').toLowerCase().includes(q) ||
-    (p.sku || '').toLowerCase().includes(q) ||
-    (p.barcode || '').toLowerCase().includes(q)
-  );
+  if (q) {
+    list = list.filter((p) =>
+      (p.name || '').toLowerCase().includes(q) ||
+      (p.sku || '').toLowerCase().includes(q) ||
+      (p.barcode || '').toLowerCase().includes(q)
+    );
+  }
+  if (filterCategory) {
+    list = list.filter((p) => (p.category || '').trim() === filterCategory);
+  }
+  list = [...list];
+  if (sortMode === 'name') list.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN'));
+  else if (sortMode === 'priceAsc') list.sort((a, b) => (Number(a.price) || 0) - (Number(b.price) || 0));
+  else if (sortMode === 'priceDesc') list.sort((a, b) => (Number(b.price) || 0) - (Number(a.price) || 0));
+  else if (sortMode === 'updated') list.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  return list;
+}
+
+// 分类筛选下拉（在 refreshCategoryDatalist 时一并刷新）
+function buildCategoryFilter() {
+  const sel = $('categoryFilter');
+  if (!sel) return;
+  const cats = Array.from(new Set(products.map((p) => (p.category || '').trim()).filter(Boolean)))
+    .sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  sel.innerHTML = '';
+  const optAll = document.createElement('option');
+  optAll.value = '';
+  optAll.textContent = '全部分类';
+  sel.appendChild(optAll);
+  for (const c of cats) {
+    const opt = document.createElement('option');
+    opt.value = c;
+    opt.textContent = c;
+    sel.appendChild(opt);
+  }
+  if (filterCategory && cats.includes(filterCategory)) sel.value = filterCategory;
+  else { filterCategory = ''; sel.value = ''; }
 }
 
 function renderList() {
+  // 分类集合变化时自动重建筛选下拉（表单/恢复/导入等任何来源的商品变动都覆盖）
+  const catsKey = [...new Set(products.map((p) => (p.category || '').trim()).filter(Boolean))].sort().join('|');
+  if (catsKey !== lastCatsKey) {
+    lastCatsKey = catsKey;
+    buildCategoryFilter();
+  }
   const body = $('productBody');
   const list = filteredProducts();
   body.innerHTML = '';
@@ -356,6 +403,7 @@ async function deleteProduct() {
 function refreshCategoryDatalist() {
   const set = new Set(products.map((p) => p.category).filter(Boolean));
   $('categoryList').innerHTML = [...set].map((c) => `<option value="${esc(c)}">`).join('');
+  buildCategoryFilter();
 }
 
 /* ---------------- 打印 ---------------- */
@@ -421,6 +469,18 @@ async function doPrint() {
       const found = printerList.find((p) => p.deviceName === opt.deviceName);
       const name = found ? (found.displayName || found.deviceName) : (opt.deviceName || '系统默认打印机');
       showToast(`已发送到「${name}」× ${opt.copies} 份`, 'success');
+      // 记录打印历史（含完整打印载荷，供一键原样重打）
+      window.api.savePrintHistory({
+        time: new Date().toISOString(),
+        count: payload.length,
+        names: payload.slice(0, 5).map((p) => p.name || p.sku || '未命名'),
+        copies: opt.copies,
+        deviceName: opt.deviceName,
+        landscape: opt.landscape,
+        payload,
+        settings: deepCopy(designerSettings),
+        printOptions: opt,
+      }).catch(() => {});
     } else if (res && !res.ok) {
       if (res.reason === '用户取消') showToast('打印已取消');
       else if (res.error) showToast('打印失败：' + res.error, 'error');
@@ -431,6 +491,86 @@ async function doPrint() {
   } finally {
     modal.classList.add('hidden');
     $('printModal').dataset.payload = '';
+  }
+}
+
+/* ---------------- 导出 PDF ---------------- */
+
+async function doExportPdf() {
+  if (!designerSettings) return;
+  const payload = JSON.parse($('printModal').dataset.payload || '[]');
+  if (!payload.length) { showToast('没有可导出的商品', 'warn'); return; }
+  $('btnExportPdf').disabled = true;
+  try {
+    const res = await window.api.exportPdf({
+      products: payload,
+      opts: { settings: designerSettings, printOptions: currentPrintOptions() },
+    });
+    if (res && res.ok) showToast('已导出：\n' + res.path, 'success');
+    else if (res && !res.canceled && res.error) showToast('导出失败：' + res.error, 'error');
+  } catch (e) {
+    showToast('导出出错：' + (e && e.message ? e.message : e), 'error');
+  } finally {
+    $('btnExportPdf').disabled = false;
+  }
+}
+
+/* ---------------- 打印历史 / 一键重打 ---------------- */
+
+let historyCache = [];
+
+async function openHistoryModal() {
+  const res = await window.api.getPrintHistory();
+  historyCache = (res && res.history) || [];
+  renderHistoryList();
+  $('historyModal').classList.remove('hidden');
+}
+
+function renderHistoryList() {
+  const box = $('historyList');
+  box.innerHTML = '';
+  if (!historyCache.length) {
+    box.innerHTML = '<p class="history-empty">还没有打印记录</p>';
+    return;
+  }
+  historyCache.forEach((h, i) => {
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    const t = new Date(h.time);
+    const timeStr = isNaN(t) ? String(h.time) : t.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const names = h.names || [];
+    const summary = names.length > 3
+      ? names.slice(0, 3).join('、') + ` 等 ${h.count} 个`
+      : names.join('、');
+    const dev = h.deviceName || '系统默认打印机';
+    item.innerHTML = `
+      <div class="history-info">
+        <div class="history-line1"><span class="history-time">${esc(timeStr)}</span><span class="history-meta">${esc(dev)}${h.landscape ? ' · 横向' : ''} × ${Number(h.copies) || 1} 份</span></div>
+        <div class="history-desc" title="${esc(summary)}">${esc(summary)}</div>
+      </div>
+      <button type="button" class="mini-btn" data-reprint="${i}">🖨 重打</button>`;
+    box.appendChild(item);
+  });
+}
+
+async function reprintHistory(idx) {
+  const h = historyCache[idx];
+  if (!h || !Array.isArray(h.payload) || !h.payload.length) {
+    showToast('该记录缺少打印内容，无法重打', 'warn');
+    return;
+  }
+  const copies = Math.max(1, Math.round(Number(h.copies) || 1));
+  try {
+    const res = await window.api.printLabels(h.payload, {
+      settings: h.settings,
+      printOptions: { ...(h.printOptions || {}), copies },
+    });
+    if (res && res.ok) showToast('已重打 × ' + copies + ' 份', 'success');
+    else if (res && res.reason === '用户取消') showToast('打印已取消');
+    else if (res && res.error) showToast('重打失败：' + res.error, 'error');
+    else if (res && res.reason) showToast('重打失败：' + res.reason, 'error');
+  } catch (e) {
+    showToast('重打出错：' + (e && e.message ? e.message : e), 'error');
   }
 }
 
@@ -459,6 +599,7 @@ let lastUndoTag = null;        // 连续同类操作合并标记（如方向键�
 let lastUndoTime = 0;
 let autoSaveTimer = null;      // 自动保存防抖
 let resizeTimer = null;        // 窗口缩放防抖
+let manualZoom = null;         // Ctrl+滚轮手动缩放倍数（null = 自适应）
 
 const deepCopy = (o) => JSON.parse(JSON.stringify(o));
 
@@ -470,19 +611,19 @@ const ELEMENT_LABELS = {
 };
 
 const ELEMENT_FIELDS = {
-  name:    ['x', 'y', 'w', 'fontSize', 'align', 'bold'],
-  price:   ['x', 'y', 'w', 'fontSize', 'align', 'bold'],
-  sku:     ['x', 'y', 'w', 'fontSize', 'align', 'bold'],
-  barcode: ['x', 'y', 'w', 'h', 'fontSize', 'align'],
+  name:    ['x', 'y', 'w', 'fontSize', 'align', 'bold', 'rot', 'vertical'],
+  price:   ['x', 'y', 'w', 'fontSize', 'align', 'bold', 'rot', 'vertical'],
+  sku:     ['x', 'y', 'w', 'fontSize', 'align', 'bold', 'rot', 'vertical'],
+  barcode: ['x', 'y', 'w', 'h', 'fontSize', 'align', 'rot'],
 };
 
 // 自定义元素可编辑字段（name 元素名称、text 文本、color 颜色走特殊控件）
-const CUSTOM_FIELDS = ['name', 'text', 'x', 'y', 'w', 'fontSize', 'align', 'bold', 'color'];
+const CUSTOM_FIELDS = ['name', 'text', 'x', 'y', 'w', 'fontSize', 'align', 'bold', 'color', 'rot', 'vertical'];
 
 const FIELD_LABELS = {
   x: 'X 位置', y: 'Y 位置', w: '宽度', h: '高度',
   fontSize: '字号', align: '对齐', bold: '加粗',
-  text: '文本内容', color: '颜色', name: '元素名称',
+  text: '文本内容', color: '颜色', name: '元素名称', rot: '旋转', vertical: '排列',
 };
 
 // 根据 key 取元素：'custom:<id>' → 自定义元素；其他 → 固定元素
@@ -633,16 +774,17 @@ function afterLayoutChange() {
   scheduleAutoSave();
 }
 
-// 把所有元素夹回标签边界内（此前元素可被拖出右/下边界后"看不见"）
+// 把所有元素夹回标签边界内（旋转元素按视觉包围盒计算；此前元素可被拖出右/下边界后"看不见"）
 function clampAll() {
-  const clampEl = (el) => {
+  const clampEl = (key, el) => {
     if (!el) return;
-    el.x = clampAxis(el.x, curLabelW - (el.w || 0));
-    el.y = clampAxis(el.y, curLabelH - (el.h || 0));
+    const c = clampVisual(el, key, el.x, el.y);
+    el.x = c.x;
+    el.y = c.y;
   };
   if (!designerSettings) return;
-  for (const k of LabelRender.ELEMENT_KEYS) clampEl(designerSettings.elements[k]);
-  for (const c of designerSettings.custom || []) clampEl(c);
+  for (const k of LabelRender.ELEMENT_KEYS) clampEl(k, designerSettings.elements[k]);
+  for (const c of designerSettings.custom || []) clampEl('custom:' + c.id, c);
 }
 
 /* ---------------- 批量对齐 / 等距分布 ---------------- */
@@ -663,12 +805,12 @@ function alignSelection(mode) {
   const b = Math.max(...items.map((i) => i.e.bottom));
   const cx = (l + r) / 2, cy = (t + b) / 2;
   for (const it of items) {
-    if (mode === 'left') it.el.x = round10(l);
-    else if (mode === 'centerX') it.el.x = round10(cx - it.e.w / 2);
-    else if (mode === 'right') it.el.x = round10(r - it.e.w);
-    else if (mode === 'top') it.el.y = round10(t);
-    else if (mode === 'centerY') it.el.y = round10(cy - it.e.h / 2);
-    else if (mode === 'bottom') it.el.y = round10(b - it.e.h);
+    if (mode === 'left') it.el.x = round10(l - it.e.vx);
+    else if (mode === 'centerX') it.el.x = round10(cx - it.e.vw / 2 - it.e.vx);
+    else if (mode === 'right') it.el.x = round10(r - it.e.vw - it.e.vx);
+    else if (mode === 'top') it.el.y = round10(t - it.e.vy);
+    else if (mode === 'centerY') it.el.y = round10(cy - it.e.vh / 2 - it.e.vy);
+    else if (mode === 'bottom') it.el.y = round10(b - it.e.vh - it.e.vy);
   }
   afterLayoutChange();
 }
@@ -680,17 +822,17 @@ function distributeSelection(axis) {
   if (axis === 'x') {
     items.sort((a, b) => a.e.left - b.e.left);
     const span = items[items.length - 1].e.right - items[0].e.left;
-    const totalW = items.reduce((s, i) => s + i.e.w, 0);
+    const totalW = items.reduce((s, i) => s + i.e.vw, 0);
     const gap = (span - totalW) / (items.length - 1);
     let cur = items[0].e.left;
-    for (const it of items) { it.el.x = round10(cur); cur += it.e.w + gap; }
+    for (const it of items) { it.el.x = round10(cur - it.e.vx); cur += it.e.vw + gap; }
   } else {
     items.sort((a, b) => a.e.top - b.e.top);
     const span = items[items.length - 1].e.bottom - items[0].e.top;
-    const totalH = items.reduce((s, i) => s + i.e.h, 0);
+    const totalH = items.reduce((s, i) => s + i.e.vh, 0);
     const gap = (span - totalH) / (items.length - 1);
     let cur = items[0].e.top;
-    for (const it of items) { it.el.y = round10(cur); cur += it.e.h + gap; }
+    for (const it of items) { it.el.y = round10(cur - it.e.vy); cur += it.e.vh + gap; }
   }
   afterLayoutChange();
 }
@@ -699,6 +841,7 @@ function distributeSelection(axis) {
 async function openDesigner(products) {
   designerProducts = products;
   sampleIdx = 0;
+  manualZoom = null;
   setSelection(['name']); // 默认展开第一个元素参数
   resetUndo();
   const saved = await window.api.getPrintSettings();
@@ -766,11 +909,18 @@ async function loadPrinterOptions() {
 }
 
 function currentPrintOptions() {
+  const clampOff = (v) => {
+    const n = Number(v);
+    if (!isFinite(n)) return 0;
+    return Math.max(-20, Math.min(20, Math.round(n * 10) / 10));
+  };
   return {
     deviceName: $('optPrinter').value || '',
     landscape: $('optLandscape').value === '1',
     copies: Math.max(1, Math.round(Number($('optCopies').value) || 1)),
     silent: $('optSilent').checked,
+    offsetX: clampOff($('optOffX').value),
+    offsetY: clampOff($('optOffY').value),
   };
 }
 
@@ -784,6 +934,8 @@ function applyPresetPrintOptions() {
   $('optLandscape').value = po.landscape ? '1' : '0';
   $('optCopies').value = Math.max(1, Math.round(Number(po.copies) || 1));
   $('optSilent').checked = po.silent !== false;
+  $('optOffX').value = Number(po.offsetX) || 0;
+  $('optOffY').value = Number(po.offsetY) || 0;
 }
 
 function savePrinterOptionsNow() {
@@ -1068,6 +1220,25 @@ function buildFieldControl(key, field, getEl) {
       apply(() => { getEl().bold = sel.value === '1'; });
     });
     lab.appendChild(sel);
+  } else if (field === 'rot') {
+    const sel = document.createElement('select');
+    sel.innerHTML = '<option value="0">0°</option><option value="90">90°</option><option value="180">180°</option><option value="270">270°</option>';
+    sel.value = String(getEl().rot || 0);
+    bindFocus(sel);
+    sel.addEventListener('change', () => {
+      apply(() => { getEl().rot = LabelRender.normalizeRot(sel.value); });
+    });
+    lab.appendChild(sel);
+  } else if (field === 'vertical') {
+    const sel = document.createElement('select');
+    sel.innerHTML = '<option value="0">横排</option><option value="1">竖排</option>';
+    sel.value = getEl().vertical ? '1' : '0';
+    sel.title = '竖排：每个字直立、从上往下排列';
+    bindFocus(sel);
+    sel.addEventListener('change', () => {
+      apply(() => { getEl().vertical = sel.value === '1'; });
+    });
+    lab.appendChild(sel);
   } else if (field === 'name') {
     // 元素名称：默认自动取文本前 5 字；用户手动修改后锁定（不再随文本变化）
     const inp = document.createElement('input');
@@ -1186,21 +1357,39 @@ function snapThresholdMM() {
   return Math.max(0.3, Math.min(1.5, Math.round(px * 100) / 100));
 }
 
-// 数值夹回 [0, max]（元素不允许拖出标签右/下边界）
+// 数值夹回 [0, max]（元素不允许拖出标签右/下边界；上限向下取整保证旋转元素视觉盒也不越界）
 function clampAxis(v, max) {
-  const hi = Math.max(0, round10(max));
+  const hi = Math.max(0, Math.floor(max * 10) / 10);
   return Math.max(0, Math.min(round10(v), hi));
 }
 
 // 元素关键边缘（mm 坐标系）；文本元素优先用预览实测高度（缩字后真实值）
+// 旋转元素（0/90/180/270）返回"视觉包围盒"：旋转绕中心，vw/vh 为视觉宽高，vx/vy 为视觉盒原点相对元素盒原点的偏移
 function elementEdges(el, key) {
   const w = el.w || 0;
   const measured = key ? snapHeights[key] : null;
   const h = el.h || measured || (el.fontSize || 0) * 1.15;
+  const rot = el.rot || 0;
+  const swapped = rot === 90 || rot === 270;
+  const vw = swapped ? h : w;
+  const vh = swapped ? w : h;
+  const vx = (vw - w) / 2;
+  const vy = (vh - h) / 2;
+  const left = el.x + vx;
+  const top = el.y + vy;
   return {
-    left: el.x, centerX: el.x + w / 2, right: el.x + w,
-    top: el.y, centerY: el.y + h / 2, bottom: el.y + h,
-    w, h,
+    left, centerX: left + vw / 2, right: left + vw,
+    top, centerY: top + vh / 2, bottom: top + vh,
+    w, h, vw, vh, vx, vy,
+  };
+}
+
+// 视觉包围盒不越界的元素盒原点上限（x 方向传 e，y 方向同理）
+function clampVisual(el, key, nx, ny) {
+  const e = elementEdges({ ...el, x: nx, y: ny }, key);
+  return {
+    x: clampAxis(nx, curLabelW - e.vw - e.vx),
+    y: clampAxis(ny, curLabelH - e.vh - e.vy),
   };
 }
 
@@ -1255,8 +1444,8 @@ function computeSnap(key, el, tx, ty) {
     const s = bestSnap(c.val, cand.xs, dist);
     if (s && (!bestX || Math.abs(s.delta) < Math.abs(bestX.snap.delta))) bestX = { offset: c.offset, snap: s };
   }
-  if (bestX) { tx = clampAxis(tx + bestX.snap.delta, curLabelW - e.w); gx = bestX.snap.snapTo; }
-  else { tx = clampAxis(tx, curLabelW - e.w); }
+  if (bestX) { tx = clampAxis(tx + bestX.snap.delta, curLabelW - e.vw - e.vx); gx = bestX.snap.snapTo; }
+  else { tx = clampAxis(tx, curLabelW - e.vw - e.vx); }
   // 垂直（Y）方向
   const yCand = [
     { offset: 0, val: e.top },
@@ -1268,8 +1457,8 @@ function computeSnap(key, el, tx, ty) {
     const s = bestSnap(c.val, cand.ys, dist);
     if (s && (!bestY || Math.abs(s.delta) < Math.abs(bestY.snap.delta))) bestY = { offset: c.offset, snap: s };
   }
-  if (bestY) { ty = clampAxis(ty + bestY.snap.delta, curLabelH - e.h); gy = bestY.snap.snapTo; }
-  else { ty = clampAxis(ty, curLabelH - e.h); }
+  if (bestY) { ty = clampAxis(ty + bestY.snap.delta, curLabelH - e.vh - e.vy); gy = bestY.snap.snapTo; }
+  else { ty = clampAxis(ty, curLabelH - e.vh - e.vy); }
   return { tx, ty, gx, gy };
 }
 
@@ -1306,29 +1495,37 @@ function clearGuides() {
   canvas.querySelectorAll('.guide-v, .guide-h').forEach((n) => n.remove());
 }
 
-// 生成单个标签内容的 HTML（预览用，带 data-key 供交互）
+// 生成单个标签内容的 HTML（预览用，带 data-key 供交互）；rotStyle/verticalStyle 与打印端同规则
+function rotStyle(el) {
+  return el.rot ? `transform-origin:center;transform:rotate(${el.rot}deg);` : '';
+}
+
+function verticalStyle(el) {
+  return el.vertical ? 'writing-mode:vertical-lr;text-orientation:upright;' : '';
+}
+
 function buildLabelBody(sample) {
   const el = designerSettings.elements;
   const body = [];
   if (el.name.visible && sample.name) {
-    body.push(`<div class="el el-name" data-key="name" style="left:${unitMM(el.name.x)};top:${unitMM(el.name.y)};width:${unitMM(el.name.w)};font-size:${unitMM(el.name.fontSize)};text-align:${el.name.align};font-weight:${el.name.bold ? 'bold' : 'normal'};color:${el.name.color};">${LabelRender.esc(sample.name)}</div>`);
+    body.push(`<div class="el el-name" data-key="name" style="left:${unitMM(el.name.x)};top:${unitMM(el.name.y)};width:${unitMM(el.name.w)};font-size:${unitMM(el.name.fontSize)};text-align:${el.name.align};font-weight:${el.name.bold ? 'bold' : 'normal'};color:${el.name.color};${rotStyle(el.name)}${verticalStyle(el.name)}">${LabelRender.esc(sample.name)}</div>`);
   }
   if (el.price.visible && sample.price !== '' && sample.price != null) {
-    body.push(`<div class="el el-price" data-key="price" style="left:${unitMM(el.price.x)};top:${unitMM(el.price.y)};width:${unitMM(el.price.w)};font-size:${unitMM(el.price.fontSize)};text-align:${el.price.align};font-weight:${el.price.bold ? 'bold' : 'normal'};color:${el.price.color};">¥${Number(sample.price).toFixed(2)}</div>`);
+    body.push(`<div class="el el-price" data-key="price" style="left:${unitMM(el.price.x)};top:${unitMM(el.price.y)};width:${unitMM(el.price.w)};font-size:${unitMM(el.price.fontSize)};text-align:${el.price.align};font-weight:${el.price.bold ? 'bold' : 'normal'};color:${el.price.color};${rotStyle(el.price)}${verticalStyle(el.price)}">¥${Number(sample.price).toFixed(2)}</div>`);
   }
   if (el.sku.visible && sample.sku) {
-    body.push(`<div class="el el-sku" data-key="sku" style="left:${unitMM(el.sku.x)};top:${unitMM(el.sku.y)};width:${unitMM(el.sku.w)};font-size:${unitMM(el.sku.fontSize)};text-align:${el.sku.align};font-weight:${el.sku.bold ? 'bold' : 'normal'};color:${el.sku.color};">${LabelRender.esc(sample.sku)}</div>`);
+    body.push(`<div class="el el-sku" data-key="sku" style="left:${unitMM(el.sku.x)};top:${unitMM(el.sku.y)};width:${unitMM(el.sku.w)};font-size:${unitMM(el.sku.fontSize)};text-align:${el.sku.align};font-weight:${el.sku.bold ? 'bold' : 'normal'};color:${el.sku.color};${rotStyle(el.sku)}${verticalStyle(el.sku)}">${LabelRender.esc(sample.sku)}</div>`);
   }
   if (el.barcode.visible && sample.barcodeSvg) {
-    body.push(`<img class="el el-barcode" data-key="barcode" src="${sample.barcodeSvg}" alt="barcode" style="left:${unitMM(el.barcode.x)};top:${unitMM(el.barcode.y)};width:${unitMM(el.barcode.w)};height:${unitMM(el.barcode.h)};">`);
+    body.push(`<img class="el el-barcode" data-key="barcode" src="${sample.barcodeSvg}" alt="barcode" style="left:${unitMM(el.barcode.x)};top:${unitMM(el.barcode.y)};width:${unitMM(el.barcode.w)};height:${unitMM(el.barcode.h)};${rotStyle(el.barcode)}">`);
     if (sample.barcodeText && el.barcode.fontSize > 0) {
-      body.push(`<div class="el el-barcode-text" data-key="barcode" style="left:${unitMM(el.barcode.x)};top:${unitMM(el.barcode.y + el.barcode.h)};width:${unitMM(el.barcode.w)};font-size:${unitMM(el.barcode.fontSize)};text-align:${el.barcode.align};">${LabelRender.esc(sample.barcodeText)}</div>`);
+      body.push(`<div class="el el-barcode-text" data-key="barcode" style="left:${unitMM(el.barcode.x)};top:${unitMM(el.barcode.y + el.barcode.h)};width:${unitMM(el.barcode.w)};font-size:${unitMM(el.barcode.fontSize)};text-align:${el.barcode.align};${rotStyle({ rot: el.barcode.rot })}">${LabelRender.esc(sample.barcodeText)}</div>`);
     }
   }
   // 自定义元素
   (designerSettings.custom || []).forEach((c) => {
     if (!c.visible) return;
-    body.push(`<div class="el el-custom" data-key="custom:${c.id}" style="left:${unitMM(c.x)};top:${unitMM(c.y)};width:${unitMM(c.w)};font-size:${unitMM(c.fontSize)};text-align:${c.align};font-weight:${c.bold ? 'bold' : 'normal'};color:${c.color};">${LabelRender.esc(c.text)}</div>`);
+    body.push(`<div class="el el-custom" data-key="custom:${c.id}" style="left:${unitMM(c.x)};top:${unitMM(c.y)};width:${unitMM(c.w)};font-size:${unitMM(c.fontSize)};text-align:${c.align};font-weight:${c.bold ? 'bold' : 'normal'};color:${c.color};${rotStyle(c)}${verticalStyle(c)}">${LabelRender.esc(c.text)}</div>`);
   });
   return body.join('\n');
 }
@@ -1385,7 +1582,9 @@ function renderPreview() {
   const availH = (rightPane ? rightPane.clientHeight : 560) - 70;
   const scaleByW = availW / (sheetW * MM_TO_PX);
   const scaleByH = availH / (sheetH * MM_TO_PX);
-  currentPreviewScale = Math.max(0.4, Math.min(MAX_PREVIEW_SCALE, scaleByW, scaleByH));
+  const autoScale = Math.max(0.4, Math.min(MAX_PREVIEW_SCALE, scaleByW, scaleByH));
+  // Ctrl+滚轮手动缩放优先（范围 0.4~4 倍），未手动调整时用自适应值
+  currentPreviewScale = manualZoom != null ? Math.max(0.4, Math.min(4, manualZoom)) : autoScale;
 
   stage.style.width = mmToPx(sheetW) + 'px';
   stage.style.height = mmToPx(sheetH) + 'px';
@@ -1440,7 +1639,7 @@ function renderPreview() {
   canvas.onmousedown = startMarquee;
 
   const cfgInfo = LabelRender.SIZE_CFG[designerSettings.labelSize];
-  $('previewMeta').textContent = `标签 ${cfgInfo.label} · 方向 ${landscape ? '横向' : '纵向'} · 预览缩放 ${Math.round(currentPreviewScale * 100) / 100} 倍 · 拖动元素调整位置`;
+  $('previewMeta').textContent = `标签 ${cfgInfo.label} · 方向 ${landscape ? '横向' : '纵向'} · 预览缩放 ${Math.round(currentPreviewScale * 100) / 100} 倍${manualZoom != null ? '（Ctrl+滚轮可调，切尺寸/方向恢复自适应）' : ' · Ctrl+滚轮缩放'} · 拖动元素调整位置`;
   updateSampleNav();
   updateSelectionToolbar();
   updateUndoRedoButtons();
@@ -1493,8 +1692,9 @@ function startDrag(e, key, node) {
         const el = elementByKey(k);
         const o = dragging.origs[k];
         if (!el || !o) continue;
-        el.x = clampAxis(o.x + dxMM, curLabelW - (el.w || 0));
-        el.y = clampAxis(o.y + dyMM, curLabelH - (el.h || 0));
+        const c = clampVisual(el, k, o.x + dxMM, o.y + dyMM);
+        el.x = c.x;
+        el.y = c.y;
         const node2 = live.querySelector(`.el[data-key="${CSS.escape(k)}"]`);
         if (node2) {
           node2.style.left = unitMM(el.x);
@@ -1507,10 +1707,9 @@ function startDrag(e, key, node) {
     const el = elementByKey(dragging.key);
     const o = dragging.origs[dragging.key];
     if (!el || !o) return;
-    const txRaw = clampAxis(o.x + dxMM, curLabelW - (el.w || 0));
-    const tyRaw = clampAxis(o.y + dyMM, curLabelH - (el.h || 0));
+    const raw = clampVisual(el, dragging.key, o.x + dxMM, o.y + dyMM);
     // 对齐吸附 + 参考线
-    const snap = computeSnap(dragging.key, el, txRaw, tyRaw);
+    const snap = computeSnap(dragging.key, el, raw.x, raw.y);
     el.x = snap.tx;
     el.y = snap.ty;
     // 只更新被拖节点位置，不全量重绘（拖动流畅）
@@ -1610,7 +1809,7 @@ function syncElementInputs(key) {
   if (!el) return;
   const fields = key.startsWith('custom:') ? CUSTOM_FIELDS : ELEMENT_FIELDS[key];
   const inputs = card.querySelectorAll('input[type=number]');
-  const fieldOrder = fields.filter((f) => f !== 'align' && f !== 'bold' && f !== 'text' && f !== 'color' && f !== 'name');
+  const fieldOrder = fields.filter((f) => f !== 'align' && f !== 'bold' && f !== 'text' && f !== 'color' && f !== 'name' && f !== 'rot' && f !== 'vertical');
   inputs.forEach((inp, i) => {
     const f = fieldOrder[i];
     if (f) inp.value = el[f];
@@ -1736,14 +1935,61 @@ function bindEvents() {
   $('optPrinter').addEventListener('change', savePrinterOptionsNow);
   $('optLandscape').addEventListener('change', () => {
     savePrinterOptionsNow();
-    if (designerSettings) renderPreview(); // 方向切换即时重绘预览
+    manualZoom = null; // 方向切换重置为自适应缩放
+    if (designerSettings) renderPreview();
   });
   $('optCopies').addEventListener('input', savePrinterOptionsNow);
   $('optSilent').addEventListener('change', savePrinterOptionsNow);
+  $('optOffX').addEventListener('input', savePrinterOptionsNow);
+  $('optOffY').addEventListener('input', savePrinterOptionsNow);
+
+  // Ctrl+滚轮手动缩放预览（不按 Ctrl 保留默认滚动）
+  document.querySelector('.designer-right').addEventListener('wheel', (e) => {
+    if (!e.ctrlKey || !designerSettings || $('printModal').classList.contains('hidden')) return;
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.1 : 0.9;
+    manualZoom = Math.max(0.4, Math.min(4, (manualZoom || currentPreviewScale) * factor));
+    renderPreview();
+  }, { passive: false });
+
+  // 关窗瞬间把防抖中未落盘的设置同步写盘（invoke 会在卸载时被打断，用 send）
+  window.addEventListener('beforeunload', () => {
+    if (designerSettings && activePreset) {
+      printPresets[activePreset] = deepCopy(designerSettings);
+      try { window.api.savePrintSettingsSync({ active: activePreset, presets: printPresets }); } catch (_) { /* ignore */ }
+    }
+  });
+
+  // 分类筛选 / 排序（切换后把选中值写入状态再刷新列表）
+  $('categoryFilter').addEventListener('change', (e) => {
+    filterCategory = e.target.value;
+    renderList();
+  });
+  $('sortSelect').addEventListener('change', (e) => {
+    sortMode = e.target.value;
+    renderList();
+  });
+
+  // 导出 PDF
+  $('btnExportPdf').addEventListener('click', doExportPdf);
+
+  // 打印历史
+  $('btnHistory').addEventListener('click', openHistoryModal);
+  $('btnHistoryClose').addEventListener('click', () => $('historyModal').classList.add('hidden'));
+  $('historyModal').addEventListener('click', (e) => {
+    if (e.target === $('historyModal')) $('historyModal').classList.add('hidden');
+  });
+  $('historyList').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-reprint]');
+    if (!btn) return;
+    const idx = Number(btn.dataset.reprint);
+    reprintHistory(idx);
+  });
 
   $('printSize').addEventListener('change', (e) => {
     if (!designerSettings) return;
     pushUndo();
+    manualZoom = null; // 尺寸切换重置为自适应缩放
     designerSettings = LabelRender.normalizeSettings({
       labelSize: e.target.value,
       custom: designerSettings.custom,
@@ -1758,6 +2004,7 @@ function bindEvents() {
   $('btnResetLayout').addEventListener('click', () => {
     if (!designerSettings) return;
     pushUndo();
+    manualZoom = null;
     designerSettings = LabelRender.normalizeSettings({
       labelSize: designerSettings.labelSize,
       custom: designerSettings.custom,
@@ -1812,8 +2059,9 @@ function bindEvents() {
       for (const k of selectedKeys) {
         const el = elementByKey(k);
         if (!el) continue;
-        el.x = clampAxis(el.x + moves[e.key][0], curLabelW - (el.w || 0));
-        el.y = clampAxis(el.y + moves[e.key][1], curLabelH - (el.h || 0));
+        const c = clampVisual(el, k, el.x + moves[e.key][0], el.y + moves[e.key][1]);
+        el.x = c.x;
+        el.y = c.y;
       }
       renderPreview();
       syncElementInputs(selectedElement);

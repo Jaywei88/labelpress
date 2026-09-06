@@ -3,17 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'">
-<title>商品条码管理</title>
+<title>标印 LabelPress</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <span class="logo">▮▮▮</span>
-      <h1>商品条码管理</h1>
+      <h1>标印 LabelPress</h1>
     </div>
     <div class="actions">
       <button id="btnNew" class="primary">＋ 新增商品</button>
+      <button id="btnHistory" title="最近打印的记录，可一键原样重打">🕘 打印历史</button>
       <button id="btnBackup" title="把数据另存为一个备份文件">备份数据</button>
       <button id="btnRestore" title="从备份文件恢复数据">恢复数据</button>
       <button id="btnOpenFolder" title="打开数据文件所在文件夹">打开数据夹</button>
@@ -25,6 +26,14 @@
     <section class="list-pane">
       <div class="list-toolbar">
         <input id="searchInput" type="search" placeholder="搜索名称 / SKU / 条码…">
+        <select id="categoryFilter" title="按分类筛选" class="filter-select"></select>
+        <select id="sortSelect" title="排序方式" class="filter-select">
+          <option value="default">默认排序</option>
+          <option value="name">名称 A→Z</option>
+          <option value="priceAsc">价格 低→高</option>
+          <option value="priceDesc">价格 高→低</option>
+          <option value="updated">最近修改</option>
+        </select>
         <span id="listCount" class="count">0 项</span>
       </div>
       <table class="product-table">
@@ -136,6 +145,7 @@
           <button id="btnUndo" title="撤销上一步操作（Ctrl+Z）" disabled>↶ 撤销</button>
           <button id="btnRedo" title="重做（Ctrl+Y）" disabled>↷ 重做</button>
           <button id="btnResetLayout" title="恢复当前尺寸的默认布局">恢复默认</button>
+          <button id="btnExportPdf" title="把当前标签版式导出为 PDF 文件（不走打印机）">📄 导出PDF</button>
           <button id="btnPrintCancel" class="ghost">取消</button>
           <button id="btnPrintConfirm" class="primary">🖨 打印</button>
         </div>
@@ -174,6 +184,14 @@
               </label>
               <label class="opt-field opt-half">份数
                 <input id="optCopies" type="number" min="1" max="999" value="1">
+              </label>
+            </div>
+            <div class="opt-row">
+              <label class="opt-field opt-half">偏移X
+                <input id="optOffX" type="number" step="0.1" min="-20" max="20" value="0" title="打印整体水平偏移（mm）。内容偏左时填正值，偏右时填负值">
+              </label>
+              <label class="opt-field opt-half">偏移Y
+                <input id="optOffY" type="number" step="0.1" min="-20" max="20" value="0" title="打印整体垂直偏移（mm）。内容偏上时填正值，偏下时填负值">
               </label>
             </div>
             <label class="opt-check" title="开启后点打印直接发送到所选打印机，不再弹系统打印对话框">
@@ -215,6 +233,18 @@
           </div>
           <div class="preview-meta" id="previewMeta"></div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 打印历史弹层 -->
+  <div class="modal-mask hidden" id="historyModal">
+    <div class="modal history-modal">
+      <h3>🕘 打印历史</h3>
+      <p class="history-tip">最近 20 次打印记录，点「重打」按当时的内容与设置原样输出。</p>
+      <div id="historyList" class="history-list"></div>
+      <div class="modal-actions">
+        <button id="btnHistoryClose" class="ghost">关闭</button>
       </div>
     </div>
   </div>

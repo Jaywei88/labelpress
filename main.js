@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -46,10 +46,35 @@ function saveProducts() {
   const target = DATA_FILE();
   if (fs.existsSync(target)) {
     try { fs.copyFileSync(target, BACKUP_FILE()); } catch (_) { /* ignore */ }
+    rotateAutoBackups();
   }
   const tmp = target + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify({ version: 1, products: productsCache }, null, 2), 'utf-8');
   fs.renameSync(tmp, target);
+}
+
+// 每日自动快照：第一次保存时把当前数据存到 backups/，保留最近 7 份
+let autoBackupDate = '';
+function rotateAutoBackups() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (autoBackupDate === today) return;
+  autoBackupDate = today;
+  try {
+    const dir = path.join(getDataDir(), 'backups');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `products-${today}.json`);
+    if (!fs.existsSync(file)) {
+      fs.copyFileSync(DATA_FILE(), file);
+    }
+    // 清理只保留最近 7 天
+    const olds = fs.readdirSync(dir)
+      .filter((f) => /^products-\d{4}-\d{2}-\d{2}\.json$/.test(f))
+      .sort()
+      .reverse();
+    for (const f of olds.slice(7)) {
+      try { fs.unlinkSync(path.join(dir, f)); } catch (_) { /* ignore */ }
+    }
+  } catch (_) { /* 备份轮换失败不影响主流程 */ }
 }
 
 function now() { return new Date().toISOString(); }
@@ -63,13 +88,46 @@ function findProduct(id) {
 // ---------------------------------------------------------------------------
 let mainWindow = null;
 
+// 窗口位置/大小记忆（存 userData，换机器不跟数据走）
+const WIN_STATE_FILE = () => path.join(app.getPath('userData'), 'window-state.json');
+
+function loadWindowState() {
+  try {
+    const s = JSON.parse(fs.readFileSync(WIN_STATE_FILE(), 'utf-8'));
+    if (!s || typeof s !== 'object') return null;
+    return {
+      x: Number(s.x), y: Number(s.y),
+      width: Math.max(980, Number(s.width) || 1240),
+      height: Math.max(640, Number(s.height) || 800),
+      isMaximized: !!s.isMaximized,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveWindowState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const bounds = mainWindow.isMaximized() ? mainWindow.getNormalBounds() : mainWindow.getBounds();
+    fs.writeFileSync(WIN_STATE_FILE(), JSON.stringify({
+      ...bounds,
+      isMaximized: mainWindow.isMaximized(),
+    }, null, 2), 'utf-8');
+  } catch (_) { /* ignore */ }
+}
+
 function createWindow() {
+  const state = loadWindowState();
   mainWindow = new BrowserWindow({
-    width: 1240,
-    height: 800,
+    width: state ? state.width : 1240,
+    height: state ? state.height : 800,
     minWidth: 980,
     minHeight: 640,
-    title: '商品条码管理',
+    x: state && Number.isFinite(state.x) ? state.x : undefined,
+    y: state && Number.isFinite(state.y) ? state.y : undefined,
+    title: '标印 LabelPress',
+    icon: path.join(__dirname, 'build', 'icon.ico'),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -78,6 +136,16 @@ function createWindow() {
       sandbox: true,
     },
   });
+  // 记忆位置落在可见屏幕之外（如拔掉外接显示器）时回到默认位置
+  if (state && Number.isFinite(state.x)) {
+    const onScreen = screen.getAllDisplays().some((d) => (
+      state.x >= d.workArea.x - 40 && state.x < d.workArea.x + d.workArea.width &&
+      state.y >= d.workArea.y - 40 && state.y < d.workArea.y + d.workArea.height
+    ));
+    if (!onScreen) mainWindow.setPosition(120, 80);
+  }
+  if (state && state.isMaximized) mainWindow.maximize();
+  mainWindow.on('close', saveWindowState);
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.setMenuBarVisibility(false);
@@ -203,6 +271,12 @@ function loadPrintOptions() {
   }
 }
 
+function clampOffset(v) {
+  const n = Number(v);
+  if (!isFinite(n)) return 0;
+  return Math.max(-20, Math.min(20, Math.round(n * 10) / 10));
+}
+
 function savePrintOptions(opts) {
   ensureDataDir();
   const o = opts || {};
@@ -212,17 +286,48 @@ function savePrintOptions(opts) {
     copies: Math.max(1, Math.min(999, Math.round(Number(o.copies) || 1))),
     // 默认直接打印（记忆打印机/方向/份数，不再被系统对话框重置）；显式 false 才弹系统对话框
     silent: o.silent === false ? false : true,
+    // 打印偏移补偿（mm，热敏打印机固定偏移校正用），随打印选项记忆
+    offsetX: clampOffset(o.offsetX),
+    offsetY: clampOffset(o.offsetY),
   }, null, 2), 'utf-8');
+}
+
+// ---------------------------------------------------------------------------
+// 打印历史（print-history.json，保留最近 20 条，可一键原样重打）
+// 条目：{ time, count, names, copies, deviceName, landscape, payload, settings, printOptions }
+// ---------------------------------------------------------------------------
+const HISTORY_FILE = () => path.join(getDataDir(), 'print-history.json');
+const HISTORY_LIMIT = 20;
+
+function loadPrintHistory() {
+  try {
+    const raw = fs.readFileSync(HISTORY_FILE(), 'utf-8');
+    const list = JSON.parse(raw);
+    return Array.isArray(list) ? list : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function savePrintHistoryEntry(entry) {
+  ensureDataDir();
+  const list = loadPrintHistory();
+  list.unshift(entry);
+  fs.writeFileSync(HISTORY_FILE(), JSON.stringify(list.slice(0, HISTORY_LIMIT), null, 2), 'utf-8');
 }
 
 // ---------------------------------------------------------------------------
 // 打印窗口
 // ---------------------------------------------------------------------------
-async function printLabels(products, opts) {
+// 生成打印 HTML 并在隐藏窗口加载（打印与导出 PDF 共用）
+async function openPrintWindow(products, opts) {
   const settings = normalizeSettings(opts && opts.settings ? opts.settings : undefined);
   // 打印设备选项：预设内记忆的优先，其次渲染层传入的全局记忆（旧预设无记忆时回退）
   const po = (settings && settings.printOptions) || (opts && opts.printOptions) || {};
-  const html = buildPrintHtml(products, settings, !!po.landscape);
+  const html = buildPrintHtml(products, settings, !!po.landscape, {
+    x: clampOffset(po.offsetX),
+    y: clampOffset(po.offsetY),
+  });
   const win = new BrowserWindow({
     show: false,
     webPreferences: { sandbox: true },
@@ -233,6 +338,11 @@ async function printLabels(products, opts) {
     win.destroy();
     throw new Error('打印页面生成失败: ' + err.message);
   }
+  return { win, settings, po };
+}
+
+async function printLabels(products, opts) {
+  const { win, settings, po } = await openPrintWindow(products, opts);
   const size = settings.labelSize || '60x40';
   const micron = (mm) => Math.round(mm * 1000);
   const sizeMap = { '60x40': [60, 40], '50x30': [50, 30], '40x30': [40, 30], '40x25': [40, 25], '30x40': [30, 40], '80x100': [80, 100], '100x80': [100, 80] };
@@ -389,6 +499,67 @@ ipcMain.handle('print:getPrintOptions', () => {
 ipcMain.handle('print:savePrintOptions', (_e, options) => {
   savePrintOptions(options || {});
   return { ok: true };
+});
+
+// 关窗瞬间的设置同步落盘（fire-and-forget，渲染层 unload 前发出）
+ipcMain.on('print:saveSettingsSync', (_e, payload) => {
+  try {
+    const old = loadPrintPresets() || { active: '默认', presets: {} };
+    savePrintPresets((payload && payload.active) || old.active, (payload && payload.presets) || old.presets);
+  } catch (_) { /* ignore */ }
+});
+
+// 打印历史
+ipcMain.handle('print:getHistory', () => {
+  return { ok: true, history: loadPrintHistory() };
+});
+
+ipcMain.handle('print:saveHistory', (_e, entry) => {
+  try {
+    savePrintHistoryEntry(entry && typeof entry === 'object' ? entry : {});
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// 导出 PDF（不走打印机）
+ipcMain.handle('print:exportPdf', async (_e, payload) => {
+  let win = null;
+  try {
+    const products = payload && Array.isArray(payload.products) ? payload.products : [];
+    const opts = (payload && payload.opts) || {};
+    const { win: w, settings, po } = await openPrintWindow(products, opts);
+    win = w;
+    // filePath 仅测试/自动化用；正常流程弹保存对话框
+    let filePath = payload && payload.filePath;
+    if (!filePath) {
+      const r = await dialog.showSaveDialog(mainWindow, {
+        title: '导出标签 PDF',
+        defaultPath: path.join(app.getPath('documents'), `标签-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.pdf`),
+        filters: [{ name: 'PDF 文件', extensions: ['pdf'] }],
+      });
+      if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+      filePath = r.filePath;
+    }
+    const size = settings.labelSize || '60x40';
+    const sizeMap = { '60x40': [60, 40], '50x30': [50, 30], '40x30': [40, 30], '40x25': [40, 25], '30x40': [30, 40], '80x100': [80, 100], '100x80': [100, 80] };
+    const pdfOpts = {
+      printBackground: true,
+      margins: { marginType: 'none' },
+      landscape: !!po.landscape,
+    };
+    // 注意：printToPDF 的自定义 pageSize 单位是英寸（print 的才是微米）
+    if (size === 'a4') pdfOpts.pageSize = 'A4';
+    else if (sizeMap[size]) pdfOpts.pageSize = { width: sizeMap[size][0] / 25.4, height: sizeMap[size][1] / 25.4 };
+    const buf = await win.webContents.printToPDF(pdfOpts);
+    fs.writeFileSync(filePath, buf);
+    return { ok: true, path: filePath };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  } finally {
+    if (win && !win.isDestroyed()) win.destroy();
+  }
 });
 
 // ---------------------------------------------------------------------------
