@@ -60,8 +60,10 @@ app.whenReady().then(async () => {
       "  if (Math.abs(snap.ty - skuEl.y) > 0.001) throw new Error('vertical snap failed: ty=' + snap.ty + ' want=' + skuEl.y);",
       "  if (snap.gy === null) throw new Error('no horizontal guide emitted');",
       // 5. 水平吸附：x 左边缘对齐（name 的 left 对齐 price 的 left）
+      //    先把 name 宽度缩到 20mm：默认 56mm 宽在 x=20 时右边缘越界，会被边界 clamp 夹回（新行为）
       "  const priceEl = designerSettings.elements.price;",
       "  priceEl.x = 20; priceEl.y = 5;",
+      "  nameEl.w = 20;",
       "  nameEl.x = priceEl.x; // left == price.left → 差 0",
       "  const snap2 = computeSnap('name', nameEl, priceEl.x + 0.2, nameEl.y); // 微移 0.2 → 吸回 20",
       "  log('snap2 tx=' + snap2.tx + ' gx=' + snap2.gx + ' (want 20)');",

@@ -220,7 +220,9 @@ function savePrintOptions(opts) {
 // ---------------------------------------------------------------------------
 async function printLabels(products, opts) {
   const settings = normalizeSettings(opts && opts.settings ? opts.settings : undefined);
-  const html = buildPrintHtml(products, settings);
+  // 打印设备选项：预设内记忆的优先，其次渲染层传入的全局记忆（旧预设无记忆时回退）
+  const po = (settings && settings.printOptions) || (opts && opts.printOptions) || {};
+  const html = buildPrintHtml(products, settings, !!po.landscape);
   const win = new BrowserWindow({
     show: false,
     webPreferences: { sandbox: true },
@@ -236,8 +238,6 @@ async function printLabels(products, opts) {
   const sizeMap = { '60x40': [60, 40], '50x30': [50, 30], '40x30': [40, 30], '40x25': [40, 25], '30x40': [30, 40], '80x100': [80, 100], '100x80': [100, 80] };
   const pageSize = sizeMap[size] ? { width: micron(sizeMap[size][0]), height: micron(sizeMap[size][1]) } : undefined;
 
-  // 打印设备选项：记住上次的打印机/方向/份数/静默模式
-  const po = (opts && opts.printOptions) || {};
   const printOptions = {
     silent: !!po.silent,
     printBackground: true,

@@ -40,10 +40,16 @@
 
   function normalizeCustomElement(el) {
     el = el || {};
+    const text = String(el.text == null ? '' : el.text);
+    // 名称：未手动改名（nameLocked）时自动取文本前 5 字；手动改过后以用户名称为准
+    const nameLocked = !!el.nameLocked;
+    const name = nameLocked && el.name != null ? String(el.name) : text.slice(0, 5);
     return {
       id: el.id || newCustomId(),
       type: 'text',
-      text: String(el.text == null ? '' : el.text),
+      text,
+      name,
+      nameLocked,
       visible: el.visible !== false,
       x: numberOr(el.x, 2),
       y: numberOr(el.y, 2),
@@ -58,6 +64,17 @@
   function numberOr(v, def) {
     const n = Number(v);
     return isFinite(n) && n >= 0 ? Math.round(n * 10) / 10 : def;
+  }
+
+  // 打印设备选项（打印机/方向/份数/静默）随预设记忆；无输入时返回 null（旧预设回退全局记忆）
+  function normalizePrintOptions(o) {
+    if (!o || typeof o !== 'object') return null;
+    return {
+      deviceName: String(o.deviceName || ''),
+      landscape: !!o.landscape,
+      copies: Math.max(1, Math.min(999, Math.round(Number(o.copies) || 1))),
+      silent: o.silent === false ? false : true,
+    };
   }
 
   const DEFAULT_ELEMENTS = {
@@ -146,17 +163,20 @@
     return out;
   }
 
-  // 规范化设置：补齐缺失字段、修正越界值
+  // 规范化设置：补齐缺失字段、修正越界值；printOptions（若记忆过）原样保留
   function normalizeSettings(settings) {
     settings = settings || {};
     const size = SIZE_CFG[settings.labelSize] ? settings.labelSize : '60x40';
     const defaults = defaultsForSize(size);
     const custom = Array.isArray(settings.custom) ? settings.custom.map(normalizeCustomElement) : [];
-    return {
+    const out = {
       labelSize: size,
       elements: mergeElements(defaults, settings.elements),
       custom,
     };
+    const po = normalizePrintOptions(settings.printOptions);
+    if (po) out.printOptions = po;
+    return out;
   }
 
   // ---------------- 渲染 ----------------
@@ -197,10 +217,12 @@
   }
 
   // 打印用完整 HTML（精确 mm 单位）
-  function buildPrintHtml(products, settings) {
+  // forceLandscape：A4 横向时网格重排为 4 列、@page 横放（热敏标签横向由 Electron 打印选项旋转，CSS 不变）
+  function buildPrintHtml(products, settings, forceLandscape) {
     settings = normalizeSettings(settings);
     const cfg = SIZE_CFG[settings.labelSize];
     const isA4 = settings.labelSize === 'a4';
+    const landscape = !!(forceLandscape || (settings.printOptions && settings.printOptions.landscape));
     const labelW = isA4 ? A4_LABEL_W : cfg.w;
     const labelH = isA4 ? A4_LABEL_H : cfg.h;
     const mm = (v) => v + 'mm';
@@ -209,8 +231,12 @@
       `<div class="label" style="width:${labelW}mm;height:${labelH}mm;">\n${renderLabelHTML(p, settings.elements, settings.custom, mm)}\n</div>`
     ).join('\n');
 
+    const pageCss = isA4 && landscape
+      ? '@page { size: A4 landscape; margin: 8mm; }'
+      : cfg.page;
+    // A4 网格列数：纵向 3 列（3×60+2×5=190 ≤ 194），横向 4 列（4×60+3×5=255 ≤ 281）
     const sheetStyle = isA4
-      ? `.labels { display: grid; grid-template-columns: repeat(3, ${A4_LABEL_W}mm); gap: 5mm; justify-content: start; }`
+      ? `.labels { display: grid; grid-template-columns: repeat(${landscape ? 4 : 3}, ${A4_LABEL_W}mm); gap: 5mm; justify-content: start; }`
       : `.labels { display: flex; flex-direction: column; } .label { page-break-after: always; }`;
 
     return `<!DOCTYPE html>
@@ -218,7 +244,7 @@
 <head>
 <meta charset="utf-8">
 <style>
-  ${cfg.page}
+  ${pageCss}
   * { margin: 0; padding: 0; -webkit-print-color-adjust: exact; box-sizing: border-box; }
   body { background: #fff; }
   ${sheetStyle}
@@ -231,7 +257,25 @@
   .el-barcode { object-fit: contain; }
 </style>
 </head>
-<body><div class="labels">${labels}</div></body>
+<body><div class="labels">${labels}</div>
+<script>
+/* 文本溢出自动缩字：与预览端 fitAndMeasure 同规则（0.2mm 步进，下限 1.2mm） */
+(function () {
+  var els = document.querySelectorAll('.el');
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i];
+    if (el.tagName === 'IMG') continue;
+    var m = parseFloat(el.style.fontSize);
+    if (!isFinite(m)) continue;
+    var guard = 0;
+    while (el.scrollWidth > el.clientWidth + 0.5 && m > 1.2 && guard++ < 60) {
+      m = Math.round((m - 0.2) * 10) / 10;
+      el.style.fontSize = m + 'mm';
+    }
+  }
+})();
+</script>
+</body>
 </html>`;
   }
 
@@ -239,8 +283,11 @@
     SIZE_CFG,
     ELEMENT_KEYS,
     DEFAULT_ELEMENTS,
+    A4_LABEL_W,
+    A4_LABEL_H,
     defaultsForSize,
     normalizeSettings,
+    normalizePrintOptions,
     normalizeCustomElement,
     newCustomId,
     renderLabelHTML,
