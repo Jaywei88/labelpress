@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'">
+<title>商品条码管理</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">▮▮▮</span>
+      <h1>商品条码管理</h1>
+    </div>
+    <div class="actions">
+      <button id="btnNew" class="primary">＋ 新增商品</button>
+      <button id="btnBackup" title="把数据另存为一个备份文件">备份数据</button>
+      <button id="btnRestore" title="从备份文件恢复数据">恢复数据</button>
+      <button id="btnOpenFolder" title="打开数据文件所在文件夹">打开数据夹</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- 左侧：商品列表 -->
+    <section class="list-pane">
+      <div class="list-toolbar">
+        <input id="searchInput" type="search" placeholder="搜索名称 / SKU / 条码…">
+        <span id="listCount" class="count">0 项</span>
+      </div>
+      <table class="product-table">
+        <thead>
+          <tr>
+            <th class="col-check"><input type="checkbox" id="checkAll" title="全选"></th>
+            <th>名称</th>
+            <th>SKU</th>
+            <th class="col-cat">分类</th>
+            <th class="col-price">价格</th>
+          </tr>
+        </thead>
+        <tbody id="productBody"></tbody>
+      </table>
+      <div class="list-footer">
+        <span id="printHint">勾选商品后可批量打印</span>
+        <button id="btnPrintSelected" class="primary">🖨 打印选中</button>
+        <button id="btnPrintAll">🖨 打印全部</button>
+      </div>
+    </section>
+
+    <!-- 右侧：编辑表单 -->
+    <section class="form-pane">
+      <div class="form-head">
+        <h2 id="formTitle">新增商品</h2>
+        <span id="productId" class="muted"></span>
+      </div>
+
+      <div class="form-grid">
+        <label>商品名称 <span class="req">*</span>
+          <input id="fName" type="text" maxlength="60" placeholder="例如：农夫山泉 550ml">
+        </label>
+        <label>SKU / 货号
+          <input id="fSku" type="text" maxlength="40" placeholder="例如：SKU-0001">
+        </label>
+        <label>分类
+          <input id="fCategory" type="text" maxlength="20" list="categoryList" placeholder="例如：饮料">
+          <datalist id="categoryList"></datalist>
+        </label>
+        <label>单位
+          <input id="fUnit" type="text" maxlength="10" placeholder="件 / 个 / 瓶">
+        </label>
+        <label>价格（元）
+          <input id="fPrice" type="number" min="0" step="0.01" placeholder="12.50">
+        </label>
+        <label>规格
+          <input id="fSpec" type="text" maxlength="40" placeholder="例如：550ml×24">
+        </label>
+      </div>
+
+      <div class="barcode-box">
+        <div class="barcode-form">
+          <label>条码类型
+            <select id="fBarcodeType">
+              <option value="EAN13" selected>EAN-13（13 位，商品常用）</option>
+              <option value="CODE128">Code 128（任意字符）</option>
+              <option value="UPC">UPC-A（12 位）</option>
+              <option value="CODE39">Code 39（字母数字）</option>
+              <option value="ITF14">ITF-14（14 位，箱码）</option>
+            </select>
+          </label>
+          <label>条码内容
+            <input id="fBarcode" type="text" maxlength="30" placeholder="留空则自动使用 SKU">
+          </label>
+          <div class="barcode-status" id="barcodeStatus"></div>
+        </div>
+        <div class="barcode-preview">
+          <canvas id="barcodeCanvas"></canvas>
+          <div id="barcodePreviewText" class="muted">输入条码后实时预览</div>
+        </div>
+      </div>
+
+      <label class="full">备注
+        <textarea id="fRemark" rows="2" maxlength="200" placeholder="选填"></textarea>
+      </label>
+
+      <div class="form-foot">
+        <button id="btnSave" class="primary big">💾 保存商品</button>
+        <button id="btnDelete" class="danger big" disabled>🗑 删除</button>
+        <span id="saveStatus" class="muted"></span>
+      </div>
+    </section>
+  </main>
+
+  <footer class="statusbar">
+    <span id="statusCount">共 0 个商品</span>
+    <span class="sep">|</span>
+    <span id="statusDataDir">数据位置：…</span>
+  </footer>
+
+  <!-- 打印设计器弹层 -->
+  <div class="modal-mask hidden" id="printModal">
+    <div class="designer">
+      <div class="designer-head">
+        <h3>🖨 打印标签设计器</h3>
+        <div class="designer-head-actions">
+          <label>标签尺寸
+            <select id="printSize">
+              <option value="60x40">60×40 mm（热敏标签）</option>
+              <option value="50x30">50×30 mm</option>
+              <option value="40x30">40×30 mm</option>
+              <option value="40x25">40×25 mm</option>
+              <option value="30x40">30×40 mm（竖版）</option>
+              <option value="80x100">80×100 mm</option>
+              <option value="100x80">100×80 mm</option>
+              <option value="a4">A4 整页（网格）</option>
+            </select>
+          </label>
+          <button id="btnResetLayout" title="恢复当前尺寸的默认布局">恢复默认</button>
+          <button id="btnPrintCancel" class="ghost">取消</button>
+          <button id="btnPrintConfirm" class="primary">🖨 打印</button>
+        </div>
+      </div>
+      <div class="designer-body">
+        <!-- 左侧：元素参数面板 -->
+        <div class="designer-left">
+          <!-- 打印预设栏 -->
+          <div class="preset-bar">
+            <div class="preset-bar-title">
+              <span>打印预设</span>
+              <span class="muted preset-count" id="presetCount"></span>
+            </div>
+            <select id="presetSelect" title="选择预设，自动应用其布局设置"></select>
+            <div class="preset-actions">
+              <button id="btnPresetSave" title="把当前布局设置保存到所选预设">💾 保存</button>
+              <button id="btnPresetNew" title="把当前布局另存为一个新预设">＋ 新建</button>
+              <button id="btnPresetDelete" class="danger" title="删除所选预设">🗑 删除</button>
+            </div>
+            <p class="preset-tip">调整好标签尺寸和元素布局后点「保存」，下次打开打印界面直接从下拉选择即可。</p>
+          </div>
+
+          <!-- 打印设备选项（记住上次打印机/方向/份数） -->
+          <div class="preset-bar print-opts-bar">
+            <div class="preset-bar-title">打印选项</div>
+            <label class="opt-field">打印机
+              <select id="optPrinter" title="选择打印机，下次打印自动沿用"></select>
+            </label>
+            <div class="opt-row">
+              <label class="opt-field opt-half">方向
+                <select id="optLandscape">
+                  <option value="0">纵向</option>
+                  <option value="1">横向</option>
+                </select>
+              </label>
+              <label class="opt-field opt-half">份数
+                <input id="optCopies" type="number" min="1" max="999" value="1">
+              </label>
+            </div>
+            <label class="opt-check" title="开启后点打印直接发送到所选打印机，不再弹系统打印对话框">
+              <input type="checkbox" id="optSilent"> 直接打印（跳过系统对话框）
+            </label>
+            <p class="preset-tip">以上选项会自动记住，下次打印沿用上次的打印机、方向和份数。</p>
+          </div>
+
+          <div class="element-list" id="elementList">
+            <!-- 每个元素一组参数，由 JS 生成 -->
+          </div>
+          <button id="btnAddCustom" class="add-custom-btn" title="添加一个自定义文本元素，可随意移动/复制">＋ 添加自定义文本</button>
+          <p class="designer-tip">在右侧预览中可直接拖动元素调整位置；点击元素可选中。选中元素后可用键盘方向键微调，Ctrl+C 复制、Ctrl+V 粘贴（自定义元素）。</p>
+        </div>
+        <!-- 右侧：所见即所得预览 -->
+        <div class="designer-right">
+          <div class="preview-stage" id="previewStage">
+            <div class="preview-label" id="previewLabel"></div>
+          </div>
+          <div class="preview-meta" id="previewMeta"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 确认弹层（替换 window.confirm） -->
+  <div class="modal-mask hidden" id="confirmModal">
+    <div class="modal">
+      <h3 id="confirmTitle">确认</h3>
+      <p id="confirmText"></p>
+      <div class="modal-actions">
+        <button id="btnConfirmCancel" class="ghost">取消</button>
+        <button id="btnConfirmOk" class="primary danger">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 预设命名弹层 -->
+  <div class="modal-mask hidden" id="promptModal">
+    <div class="modal">
+      <h3 id="promptTitle">预设名称</h3>
+      <label class="modal-input-label">名称
+        <input id="promptInput" type="text" maxlength="20" placeholder="例如：热敏 60×40">
+      </label>
+      <div class="modal-actions">
+        <button id="btnPromptCancel" class="ghost">取消</button>
+        <button id="btnPromptOk" class="primary">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast 提示（替换 window.alert） -->
+  <div id="toastBox"></div>
+
+  <script src="vendor/jsbarcode.min.js"></script>
+  <script src="label-render.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

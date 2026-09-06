@@ -1,0 +1,43 @@
+{
+  "name": "product-barcode-manager",
+  "productName": "商品条码管理",
+  "version": "1.0.0",
+  "description": "商品信息管理 + 条形码生成 + 标签打印（免安装便携版）",
+  "main": "main.js",
+  "author": "dlabel",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.dlabel.barcode.manager",
+    "productName": "商品条码管理",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "portable": {
+      "artifactName": "商品条码管理-便携版-${version}.exe"
+    },
+    "directories": {
+      "output": "dist"
+    },
+    "npmRebuild": false
+  },
+  "devDependencies": {
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "jsbarcode": "^3.12.3"
+  }
+}
