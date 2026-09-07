@@ -7,7 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dlabel-legacy-test-'));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'labelpress-legacy-test-'));
 process.env.PORTABLE_EXECUTABLE_DIR = tmpRoot;
 
 // 预写旧版格式：单份 settings（无 presets 字段）

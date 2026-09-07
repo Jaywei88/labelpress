@@ -1469,7 +1469,7 @@ function unitMM(v) { return Math.round(v * MM_TO_PX * currentPreviewScale) + 'px
 function mmToPx(v) { return v * MM_TO_PX * currentPreviewScale; }
 
 // ---------------- 对齐吸附与参考线 ----------------
-// 吸附取舍原则（参考 dlabel/Figma）：阈值跟手不跟 mm、每轴只取一个最近候选、
+// 吸附取舍原则（参考 LabelPress/Figma）：阈值跟手不跟 mm、每轴只取一个最近候选、
 // 参照目标克制（其它元素边缘 + 标签边/中心线共 5 个），多选拖动完全关闭吸附。
 
 // 吸附阈值（mm）：按屏幕 6px 换算并夹在 [0.3, 1.5]，缩放大小不同手感一致

@@ -9,7 +9,7 @@ const fs = require('fs');
 const os = require('os');
 
 // 关键：必须在 require('./main.js') 之前设置临时数据目录
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dlabel-preset-test-'));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'labelpress-preset-test-'));
 process.env.PORTABLE_EXECUTABLE_DIR = tmpRoot;
 
 require('../main.js');

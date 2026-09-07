@@ -7,7 +7,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dlabel-snap-test-'));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'labelpress-snap-test-'));
 process.env.PORTABLE_EXECUTABLE_DIR = tmpRoot;
 
 require('../main.js');

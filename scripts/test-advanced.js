@@ -8,7 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dlabel-advanced-test-'));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'labelpress-advanced-test-'));
 process.env.PORTABLE_EXECUTABLE_DIR = tmpRoot;
 
 require('../main.js');

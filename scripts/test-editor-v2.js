@@ -9,7 +9,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dlabel-editor-v2-'));
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'labelpress-editor-v2-'));
 process.env.PORTABLE_EXECUTABLE_DIR = tmpRoot;
 const tmpForward = tmpRoot.replace(/\\/g, '/'); // 注入 renderer 的路径（正斜杠）
 
